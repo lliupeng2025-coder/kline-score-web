@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K线计分 · 文华加权周线</title>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js"></script>
+<style>
+  :root{
+    --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
+    --red:#ef4444; --green:#22c55e; --cyan:#00d0d0; --gold:#e5c07b; --purple:#b56fd6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:"Microsoft YaHei",system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column}
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--border);background:var(--panel)}
+  header h1{font-size:17px;font-weight:600;letter-spacing:1px}
+  header h1 small{color:var(--muted);font-size:12px;margin-left:8px;font-weight:400}
+  .selector{display:flex;flex-direction:column;gap:4px;min-width:280px}
+  .selector label{font-size:12px;color:var(--muted)}
+  select{background:#16181f;color:var(--text);border:1px solid #3a3e48;border-radius:8px;padding:9px 12px;font-size:14px;font-family:inherit;cursor:pointer;outline:none}
+  select:focus{border-color:var(--gold)}
+  #status{font-size:12px;color:var(--muted);margin-left:auto}
+  #chips{display:flex;flex-wrap:wrap;gap:8px;padding:10px 18px;border-bottom:1px solid var(--border);background:var(--panel)}
+  .chip{border:1px solid var(--border);border-radius:999px;padding:5px 14px;font-size:13px;background:#12141a}
+  .chip b{font-weight:600}
+  .chip.up b{color:var(--red)} .chip.down b{color:var(--green)}
+  .chip .sub{color:var(--muted);font-size:11px;margin-left:6px}
+  #chart{flex:1;min-height:520px}
+  #snapshot{border-top:1px solid var(--border);background:var(--panel);padding:12px 18px;font-size:13px;min-height:120px}
+  #snapshot h2{font-size:14px;margin-bottom:8px;color:var(--gold)}
+  #snapshot .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px 18px;margin-bottom:10px}
+  #snapshot .grid div em{font-style:normal;color:var(--muted);display:block;font-size:11px}
+  .power-chip{display:inline-block;border:1px solid var(--border);border-radius:6px;padding:4px 8px;margin:3px 6px 0 0;font-size:12px;background:#12141a}
+  .power-chip.up{border-color:var(--red);color:var(--red)}
+  .power-chip.down{border-color:var(--green);color:var(--green)}
+  .hint{color:var(--muted);font-size:12px}
+  .up-text{color:var(--red)} .down-text{color:var(--green)}
+</style>
+</head>
+<body>
+<header>
+  <h1>K线计分<small>文华加权周线 · 力量 / 趋势</small></h1>
+  <div class="selector">
+    <label for="symbolSelect">加权连续合约</label>
+    <select id="symbolSelect"><option>加载中…</option></select>
+  </div>
+  <span id="status"></span>
+</header>
+<div id="chips"></div>
+<div id="chart"></div>
+<div id="snapshot"><span class="hint">点击任意一根周K，查看该周收盘时的计分截面（不使用之后的K线）。默认显示最新一周。</span></div>
+
+<script>
+const SUPABASE_URL = "https://yllnlwrpbllgscqaplgm.supabase.co";
+const SUPABASE_KEY = "sb_publishable_KwSbrb5YvKOwrqlvS6mfIQ_udy0sN9p";
+// 直接调 PostgREST，无额外依赖（RLS 匿名只读）
+async function dbSelect(table, query){
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
+    headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY },
+  });
+  if (!resp.ok) throw new Error(table + ' HTTP ' + resp.status);
+  return resp.json();
+}
+
+const statusEl = document.getElementById('status');
+const selectEl = document.getElementById('symbolSelect');
+const chipsEl = document.getElementById('chips');
+const snapshotEl = document.getElementById('snapshot');
+
+let chart, candleSeries, bollMid, bollTop, bollBottom, volSeries, volMaSeries;
+let bars = [];          // 当前品种全部周K（含计分快照）
+let selectedIdx = -1;   // 当前查看的周（-1 = 最新）
+
+const DIR_TEXT = {up:'向上', down:'向下', none:'无'};
+const dirClass = d => d === 'up' ? 'up' : d === 'down' ? 'down' : '';
+const fmt = (v, d=2) => (v === null || v === undefined || !isFinite(Number(v))) ? '—' : Number(v).toFixed(d);
+const fmtVol = v => {
+  if (v === null || v === undefined || !isFinite(Number(v))) return '—';
+  v = Number(v);
+  return v >= 1e8 ? (v/1e8).toFixed(2)+'亿' : v >= 1e4 ? (v/1e4).toFixed(1)+'万' : String(Math.round(v));
+};
+
+function initChart(){
+  chart = LightweightCharts.createChart(document.getElementById('chart'), {
+    layout: { background: { color: '#000' }, textColor: '#c8ccd4', fontFamily: 'Microsoft YaHei, sans-serif' },
+    grid: { vertLines: { color: '#1a1c22' }, horzLines: { color: '#1a1c22' } },
+    rightPriceScale: { borderColor: '#23262e' },
+    timeScale: { borderColor: '#23262e', timeVisible: false },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    autoSize: true,
+  });
+  // 文华配色：阳线红色空心，阴线青色实体
+  candleSeries = chart.addCandlestickSeries({
+    upColor: 'rgba(0,0,0,0)', downColor: '#00d0d0',
+    borderUpColor: '#ef4444', borderDownColor: '#00d0d0',
+    wickUpColor: '#ef4444', wickDownColor: '#00d0d0',
+  });
+  bollMid = chart.addLineSeries({ color: '#e5c07b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  bollTop = chart.addLineSeries({ color: '#b56fd6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  bollBottom = chart.addLineSeries({ color: '#b56fd6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  volSeries = chart.addHistogramSeries({ priceScaleId: 'vol', priceFormat: { type: 'volume' } });
+  volMaSeries = chart.addLineSeries({ color: '#e5c07b', lineWidth: 1, priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+  candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.26 } });
+  chart.subscribeClick(param => {
+    if (!param.time) return;
+    const idx = bars.findIndex(b => b.week_date === param.time);
+    if (idx >= 0){ selectedIdx = idx; drawMarkers(); renderSnapshot(); }
+  });
+}
+
+// 箭头与趋势线标记：向上力量=红箭头在K线下方，向下力量=绿箭头在K线上方
+function drawMarkers(){
+  const idx = selectedIdx >= 0 ? selectedIdx : bars.length - 1;
+  const bar = bars[idx];
+  const markers = [];
+  if (bar){
+    (bar.active_power_lines || []).forEach(line => {
+      markers.push({
+        time: line.time,
+        position: line.direction === 'up' ? 'belowBar' : 'aboveBar',
+        color: line.direction === 'up' ? '#ef4444' : '#22c55e',
+        shape: line.direction === 'up' ? 'arrowUp' : 'arrowDown',
+        id: 'p' + line.time + line.direction,
+      });
+    });
+    (bar.active_trend_lines || []).forEach(line => {
+      markers.push({
+        time: line.time,
+        position: line.direction === 'up' ? 'belowBar' : 'aboveBar',
+        color: '#e5c07b',
+        shape: 'circle',
+        text: line.phase || '',
+        id: 't' + line.time + line.phase,
+      });
+    });
+    markers.sort((a, b) => a.time < b.time ? -1 : 1);
+  }
+  candleSeries.setMarkers(markers);
+}
+
+function renderChips(){
+  const bar = bars[bars.length - 1];
+  if (!bar){ chipsEl.innerHTML = ''; return; }
+  const trends = bar.active_trend_lines || [];
+  const latestTrend = trends[trends.length - 1];
+  chipsEl.innerHTML =
+    `<span class="chip">最新周 <b>${bar.week_date}</b></span>` +
+    `<span class="chip ${dirClass(bar.power_direction)}">力量方向 <b>${DIR_TEXT[bar.power_direction] || '无'}</b><span class="sub">总分 ${bar.total_power_score ?? '—'}</span></span>` +
+    `<span class="chip">有效力量K线 <b>${(bar.active_power_lines || []).length}</b> 条</span>` +
+    `<span class="chip ${dirClass(latestTrend && latestTrend.direction)}">趋势阶段 <b>${latestTrend ? latestTrend.phase : '—'}</b><span class="sub">破坏位 ${latestTrend ? fmt(latestTrend.break_level, 0) : '—'}</span></span>`;
+}
+
+function renderSnapshot(){
+  const idx = selectedIdx >= 0 ? selectedIdx : bars.length - 1;
+  const bar = bars[idx];
+  if (!bar){ snapshotEl.innerHTML = '<span class="hint">无数据</span>'; return; }
+  const lines = (bar.active_power_lines || []).map(l =>
+    `<span class="power-chip ${dirClass(l.direction)}">${DIR_TEXT[l.direction] || '无'} ${l.score ?? '—'}分 · ${l.time} · ${l.shape === 'triple' ? '三线' : l.shape === 'double' ? '双线' : '单线'}${l.is_high_volume ? ' · 高量' : ''}</span>`
+  ).join('') || '<span class="hint">无</span>';
+  const trends = (bar.active_trend_lines || []).map(t =>
+    `<span class="power-chip ${dirClass(t.direction)}">${t.phase} · ${DIR_TEXT[t.direction] || ''} · 起点 ${t.time} · 破坏位 ${fmt(t.break_level, 0)}</span>`
+  ).join('') || '<span class="hint">无</span>';
+  snapshotEl.innerHTML = `
+    <h2>周线计分截面 · ${bar.week_date}${selectedIdx >= 0 ? '（历史周，双击图表返回最新）' : '（最新）'}</h2>
+    <div class="grid">
+      <div><em>OHLC</em>${fmt(bar.o,0)} / ${fmt(bar.h,0)} / ${fmt(bar.l,0)} / ${fmt(bar.c,0)}</div>
+      <div><em>VOL / MV(3,3)</em>${fmtVol(bar.vol)} / ${fmtVol(bar.vol_ma3)}</div>
+      <div><em>BOLL TOP / MID / BOTTOM</em>${fmt(bar.boll_top,0)} / ${fmt(bar.boll_mid,0)} / ${fmt(bar.boll_bottom,0)}</div>
+      <div><em>力量总方向 / 总分 / 当前K分</em><span class="${dirClass(bar.power_direction)}-text">${DIR_TEXT[bar.power_direction] || '无'}</span> / ${bar.total_power_score ?? '—'} / ${bar.bar_power_score ?? '—'}</div>
+      <div><em>力量反转</em>${bar.power_reversal ? '是（' + (bar.power_change_time || '') + '）' : '否'}</div>
+      <div><em>趋势线</em>${trends}</div>
+    </div>
+    <div><em class="hint">全部有效力量K线（红↑向上 / 绿↓向下）</em><br>${lines}</div>`;
+}
+
+async function loadSymbols(){
+  let data;
+  try { data = await dbSelect('symbols', 'select=*&order=sort_order.asc,code.asc'); }
+  catch (e){ statusEl.textContent = '品种加载失败: ' + e.message; return; }
+  const groups = {};
+  data.forEach(s => { (groups[s.exchange] = groups[s.exchange] || []).push(s); });
+  selectEl.innerHTML = Object.entries(groups).map(([ex, list]) =>
+    `<optgroup label="${ex}">` + list.map(s =>
+      `<option value="${s.code}">${s.short_name} · ${s.cn_name} · ${s.code}</option>`).join('') + '</optgroup>'
+  ).join('');
+  selectEl.addEventListener('change', () => loadBars(selectEl.value));
+  if (data.length){ selectEl.value = data.find(s => s.code === 'rbJQ00.SF') ? 'rbJQ00.SF' : data[0].code; loadBars(selectEl.value); }
+}
+
+async function loadBars(code){
+  statusEl.textContent = '加载 ' + code + ' …';
+  selectedIdx = -1;
+  try { bars = await dbSelect('weekly_bars', 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=week_date.asc'); }
+  catch (e){ statusEl.textContent = 'K线加载失败: ' + e.message; return; }
+  candleSeries.setData(bars.map(b => ({ time: b.week_date, open: +b.o, high: +b.h, low: +b.l, close: +b.c })));
+  bollMid.setData(bars.filter(b => b.boll_mid !== null).map(b => ({ time: b.week_date, value: +b.boll_mid })));
+  bollTop.setData(bars.filter(b => b.boll_top !== null).map(b => ({ time: b.week_date, value: +b.boll_top })));
+  bollBottom.setData(bars.filter(b => b.boll_bottom !== null).map(b => ({ time: b.week_date, value: +b.boll_bottom })));
+  volSeries.setData(bars.map(b => ({
+    time: b.week_date, value: +b.vol,
+    color: +b.c >= +b.o ? 'rgba(239,68,68,0.55)' : 'rgba(0,208,208,0.75)',
+  })));
+  volMaSeries.setData(bars.filter(b => b.vol_ma3 !== null).map(b => ({ time: b.week_date, value: +b.vol_ma3 })));
+  chart.timeScale().setVisibleLogicalRange({ from: bars.length - 104, to: bars.length + 2 });
+  drawMarkers(); renderChips(); renderSnapshot();
+  statusEl.textContent = code + ' · ' + bars.length + ' 周 · 更新至 ' + (bars[bars.length-1] || {}).week_date;
+}
+
+// 双击返回最新周
+document.getElementById('chart').addEventListener('dblclick', () => {
+  selectedIdx = -1; drawMarkers(); renderSnapshot();
+});
+
+initChart();
+loadSymbols();
+</script>
+</body>
+</html>

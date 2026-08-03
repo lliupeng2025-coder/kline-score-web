@@ -19,6 +19,9 @@
   .selector label{font-size:12px;color:var(--muted)}
   select{background:#16181f;color:var(--text);border:1px solid #3a3e48;border-radius:8px;padding:9px 12px;font-size:14px;font-family:inherit;cursor:pointer;outline:none}
   select:focus{border-color:var(--gold)}
+  #symbolSearch{background:#16181f;color:var(--text);border:1px solid #3a3e48;border-radius:8px;padding:8px 12px;font-size:13px;font-family:inherit;outline:none;margin-bottom:6px}
+  #symbolSearch:focus{border-color:var(--gold)}
+  #symbolSearch::placeholder{color:var(--muted)}
   #status{font-size:12px;color:var(--muted);margin-left:auto}
   #chips{display:flex;flex-wrap:wrap;gap:8px;padding:10px 18px;border-bottom:1px solid var(--border);background:var(--panel)}
   .chip{border:1px solid var(--border);border-radius:999px;padding:5px 14px;font-size:13px;background:#12141a}
@@ -41,7 +44,8 @@
 <header>
   <h1>K线计分<small>文华加权周线 · 力量 / 趋势</small></h1>
   <div class="selector">
-    <label for="symbolSelect">加权连续合约</label>
+    <label for="symbolSearch">加权连续合约</label>
+    <input id="symbolSearch" type="text" placeholder="搜索：代码 / 拼音 / 中文，如 PTA" autocomplete="off">
     <select id="symbolSelect"><option>加载中…</option></select>
   </div>
   <span id="status"></span>
@@ -64,6 +68,7 @@ async function dbSelect(table, query){
 
 const statusEl = document.getElementById('status');
 const selectEl = document.getElementById('symbolSelect');
+const searchEl = document.getElementById('symbolSearch');
 const chipsEl = document.getElementById('chips');
 const snapshotEl = document.getElementById('snapshot');
 
@@ -290,18 +295,38 @@ function renderSnapshot(){
     <div><em class="hint">全部有效力量K线（红↑向上 / 绿↓向下）</em><br>${lines}</div>`;
 }
 
-async function loadSymbols(){
-  let data;
-  try { data = await dbSelect('symbols', 'select=*&order=sort_order.asc,code.asc'); }
-  catch (e){ statusEl.textContent = '品种加载失败: ' + e.message; return; }
+let allSymbols = [];
+
+function renderOptions(list){
   const groups = {};
-  data.forEach(s => { (groups[s.exchange] = groups[s.exchange] || []).push(s); });
-  selectEl.innerHTML = Object.entries(groups).map(([ex, list]) =>
-    `<optgroup label="${escapeHtml(ex)}">` + list.map(s =>
+  list.forEach(s => { (groups[s.exchange] = groups[s.exchange] || []).push(s); });
+  selectEl.innerHTML = Object.entries(groups).map(([ex, glist]) =>
+    `<optgroup label="${escapeHtml(ex)}">` + glist.map(s =>
       `<option value="${escapeHtml(s.code)}">${escapeHtml(s.short_name)} · ${escapeHtml(s.cn_name)} · ${escapeHtml(s.code)}</option>`).join('') + '</optgroup>'
   ).join('');
-  selectEl.addEventListener('change', () => loadBars(selectEl.value));
-  if (data.length){ selectEl.value = data.find(s => s.code === 'rbJQ00.SF') ? 'rbJQ00.SF' : data[0].code; loadBars(selectEl.value); }
+}
+
+function applySearch(){
+  const kw = searchEl.value.trim().toLowerCase();
+  const list = !kw ? allSymbols : allSymbols.filter(s =>
+    (s.code || '').toLowerCase().includes(kw) ||
+    (s.short_name || '').toLowerCase().includes(kw) ||
+    (s.cn_name || '').toLowerCase().includes(kw));
+  if (!list.length){ selectEl.innerHTML = '<option value="">无匹配品种</option>'; return; }
+  renderOptions(list);
+  selectEl.value = list[0].code;
+}
+
+async function loadSymbols(){
+  try { allSymbols = await dbSelect('symbols', 'select=*&order=sort_order.asc,code.asc'); }
+  catch (e){ statusEl.textContent = '品种加载失败: ' + e.message; return; }
+  renderOptions(allSymbols);
+  selectEl.addEventListener('change', () => { if (selectEl.value) loadBars(selectEl.value); });
+  searchEl.addEventListener('input', applySearch);
+  searchEl.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' && selectEl.value){ loadBars(selectEl.value); searchEl.blur(); }
+  });
+  if (allSymbols.length){ selectEl.value = allSymbols.find(s => s.code === 'rbJQ00.SF') ? 'rbJQ00.SF' : allSymbols[0].code; loadBars(selectEl.value); }
 }
 
 async function loadBars(code){

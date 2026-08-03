@@ -67,17 +67,137 @@ const selectEl = document.getElementById('symbolSelect');
 const chipsEl = document.getElementById('chips');
 const snapshotEl = document.getElementById('snapshot');
 
-let chart, candleSeries, bollMid, bollTop, bollBottom, volSeries, volMaSeries;
+let chart, candleSeries, bollMid, bollTop, bollBottom, volSeries, volMaSeries, markerSeries;
 let bars = [];          // 当前品种全部周K（含计分快照）
 let selectedIdx = -1;   // 当前查看的周（-1 = 最新）
 
 const DIR_TEXT = {up:'向上', down:'向下', none:'无'};
+const TREND_LABEL = { O1: '趋势1', O2: '趋势2', O3: '趋势3' };
+const trendLabel = phase =>
+  Object.prototype.hasOwnProperty.call(TREND_LABEL, phase) ? TREND_LABEL[phase] : '—';
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])
+);
+const validDirection = value => value === 'up' || value === 'down';
+const arrowCountForScore = score => Math.max(0, Math.min(2, Number(score) || 0));
+const isReversal = (previous, current) =>
+  validDirection(previous) && validDirection(current) && previous !== current;
+function reversalFlags(source, limit) {
+  const flags = new Set();
+  const end = Math.min(source.length - 1, limit);
+  for (let i = 1; i <= end; i++) {
+    if (isReversal(source[i - 1].power_direction, source[i].power_direction)) {
+      flags.add(source[i].week_date);
+    }
+  }
+  return flags;
+}
 const dirClass = d => d === 'up' ? 'up' : d === 'down' ? 'down' : '';
 const fmt = (v, d=2) => (v === null || v === undefined || !isFinite(Number(v))) ? '—' : Number(v).toFixed(d);
 const fmtVol = v => {
   if (v === null || v === undefined || !isFinite(Number(v))) return '—';
   v = Number(v);
   return v >= 1e8 ? (v/1e8).toFixed(2)+'亿' : v >= 1e4 ? (v/1e4).toFixed(1)+'万' : String(Math.round(v));
+};
+const toFinitePrice = value => {
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+const markerPayloadForBar = bar => {
+  if (!bar) return null;
+  const ref = toFinitePrice(bar.c), high = toFinitePrice(bar.h), low = toFinitePrice(bar.l);
+  if (![ref, high, low].every(Number.isFinite)) return null;
+  return {
+    time: bar.week_date, ref, high, low,
+    up: 0, down: 0, trend: null, badge: false, reversal: false,
+  };
+};
+const currentBarIndex = () =>
+  Number.isInteger(selectedIdx) && selectedIdx >= 0 && selectedIdx < bars.length
+    ? selectedIdx : bars.length - 1;
+const hasHistoricalSelection = () =>
+  Number.isInteger(selectedIdx) && selectedIdx >= 0 && selectedIdx < bars.length;
+
+// —— 自定义标记层：力量箭头 + 趋势圈 + 起点徽标 + 反转文字 ——
+let markerState = null;
+function drawArrow(ctx, x, y, s, dir, color){
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (dir === 'up'){
+    ctx.moveTo(x, y - s * 0.9);
+    ctx.lineTo(x - s, y + s * 0.15); ctx.lineTo(x - s * 0.35, y + s * 0.15);
+    ctx.lineTo(x - s * 0.35, y + s * 0.95); ctx.lineTo(x + s * 0.35, y + s * 0.95);
+    ctx.lineTo(x + s * 0.35, y + s * 0.15); ctx.lineTo(x + s, y + s * 0.15);
+  } else {
+    ctx.moveTo(x, y + s * 0.9);
+    ctx.lineTo(x - s, y - s * 0.15); ctx.lineTo(x - s * 0.35, y - s * 0.15);
+    ctx.lineTo(x - s * 0.35, y - s * 0.95); ctx.lineTo(x + s * 0.35, y - s * 0.95);
+    ctx.lineTo(x + s * 0.35, y - s * 0.15); ctx.lineTo(x + s, y - s * 0.15);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+const markerSeriesHandler = {
+  name: 'scoreMarkers',
+  defaultOptions: () => ({ priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+  priceValueBuilder: d => [d.ref],
+  isWhitespace: () => false,
+  update: data => { markerState = data; },
+  renderer: () => ({
+    draw(target, priceConverter){
+      target.useMediaCoordinateSpace(({ context: ctx }) => {
+        if (!markerState || !Array.isArray(markerState.bars)) return;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        markerState.bars.forEach(bar => {
+          const d = bar && bar.originalData, x = Number(bar && bar.x);
+          if (!d || !Number.isFinite(x)) return;
+          const s = Math.max(4, Math.min(8, (markerState.barSpacing || 10) * 0.55));
+          const arrowStep = s * 2 + 4;
+          const lowY = priceConverter(d.low), highY = priceConverter(d.high);
+          if (!Number.isFinite(lowY) || !Number.isFinite(highY)) return;
+          const upCount = Math.max(0, Math.min(2, Number(d.up) || 0));
+          const downCount = Math.max(0, Math.min(2, Number(d.down) || 0));
+          // 力量箭头：向上=红色叠放在K线下方，向下=绿色叠放在K线上方，分数=箭头个数
+          for (let k = 0; k < upCount; k++) drawArrow(ctx, x, lowY + 14 + k * arrowStep, s, 'up', '#ef4444');
+          for (let k = 0; k < downCount; k++) drawArrow(ctx, x, highY - 14 - k * arrowStep, s, 'down', '#22c55e');
+          // 趋势阶段金色圆点和“趋势1/趋势2/趋势3”
+          if (d.trend){
+            const upTrend = d.trend.direction === 'up';
+            const y = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
+            ctx.fillStyle = '#e5c07b';
+            ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#e5c07b';
+            ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
+            ctx.fillText(trendLabel(d.trend.phase), x, upTrend ? y + 13 : y - 13);
+          }
+          // 计算起点：蓝色圆形 + 白色右箭头 + “起点”字样
+          if (d.badge){
+            const y = highY - 14 - downCount * arrowStep - (d.reversal ? 24 : 0) - 34;
+            ctx.fillStyle = '#2293dd';
+            ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.moveTo(x + 4.5, y);
+            ctx.lineTo(x - 0.5, y - 4); ctx.lineTo(x - 0.5, y - 1.6);
+            ctx.lineTo(x - 4.5, y - 1.6); ctx.lineTo(x - 4.5, y + 1.6);
+            ctx.lineTo(x - 0.5, y + 1.6); ctx.lineTo(x - 0.5, y + 4);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = '#2293dd';
+            ctx.font = '10px Microsoft YaHei, sans-serif';
+            ctx.fillText('起点', x, y - 15);
+          }
+          // 反转标记：后一根K线只显示简洁的文字
+          if (d.reversal){
+            ctx.fillStyle = '#f87171';
+            ctx.font = 'bold 10px Microsoft YaHei, sans-serif';
+            ctx.fillText('反转', x, highY - 14 - downCount * arrowStep - 15);
+          }
+        });
+      });
+    },
+  }),
 };
 
 function initChart(){
@@ -101,7 +221,8 @@ function initChart(){
   volSeries = chart.addHistogramSeries({ priceScaleId: 'vol', priceFormat: { type: 'volume' } });
   volMaSeries = chart.addLineSeries({ color: '#e5c07b', lineWidth: 1, priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
   chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
-  candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.06, bottom: 0.26 } });
+  candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.28, bottom: 0.26 } });
+  markerSeries = chart.addCustomSeries(markerSeriesHandler, {});
   chart.subscribeClick(param => {
     if (!param.time) return;
     const idx = bars.findIndex(b => b.week_date === param.time);
@@ -109,34 +230,28 @@ function initChart(){
   });
 }
 
-// 箭头与趋势线标记：向上力量=红箭头在K线下方，向下力量=绿箭头在K线上方
+// 标记层数据：向上力量=红箭头叠放在K线下方，向下=绿箭头叠放在上方（分数=箭头个数）
 function drawMarkers(){
-  const idx = selectedIdx >= 0 ? selectedIdx : bars.length - 1;
-  const bar = bars[idx];
-  const markers = [];
-  if (bar){
-    (bar.active_power_lines || []).forEach(line => {
-      markers.push({
-        time: line.time,
-        position: line.direction === 'up' ? 'belowBar' : 'aboveBar',
-        color: line.direction === 'up' ? '#ef4444' : '#22c55e',
-        shape: line.direction === 'up' ? 'arrowUp' : 'arrowDown',
-        id: 'p' + line.time + line.direction,
-      });
+  const idx = currentBarIndex();
+  const viewed = bars[idx];
+  const payload = bars.map(markerPayloadForBar).filter(Boolean);
+  const byTime = Object.fromEntries(payload.map(item => [item.time, item]));
+  reversalFlags(bars, idx).forEach(time => { if (byTime[time]) byTime[time].reversal = true; });
+  if (viewed){
+    (viewed.active_power_lines || []).forEach(line => {
+      const p = byTime[line.time];
+      if (!p) return;
+      const count = arrowCountForScore(line.score);
+      if (line.direction === 'up') p.up = Math.max(p.up, count);
+      if (line.direction === 'down') p.down = Math.max(p.down, count);
     });
-    (bar.active_trend_lines || []).forEach(line => {
-      markers.push({
-        time: line.time,
-        position: line.direction === 'up' ? 'belowBar' : 'aboveBar',
-        color: '#e5c07b',
-        shape: 'circle',
-        text: line.phase || '',
-        id: 't' + line.time + line.phase,
-      });
+    (viewed.active_trend_lines || []).forEach(line => {
+      const p = byTime[line.time];
+      if (p) p.trend = { phase: line.phase, direction: line.direction };
     });
-    markers.sort((a, b) => a.time < b.time ? -1 : 1);
+    if (viewed.calc_start && byTime[viewed.calc_start]) byTime[viewed.calc_start].badge = true;
   }
-  candleSeries.setMarkers(markers);
+  markerSeries.setData(payload);
 }
 
 function renderChips(){
@@ -145,30 +260,31 @@ function renderChips(){
   const trends = bar.active_trend_lines || [];
   const latestTrend = trends[trends.length - 1];
   chipsEl.innerHTML =
-    `<span class="chip">最新周 <b>${bar.week_date}</b></span>` +
-    `<span class="chip ${dirClass(bar.power_direction)}">力量方向 <b>${DIR_TEXT[bar.power_direction] || '无'}</b><span class="sub">总分 ${bar.total_power_score ?? '—'}</span></span>` +
+    `<span class="chip">最新周 <b>${escapeHtml(bar.week_date)}</b></span>` +
+    `<span class="chip ${escapeHtml(dirClass(bar.power_direction))}">力量方向 <b>${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</b><span class="sub">总分 ${escapeHtml(bar.total_power_score ?? '—')}</span></span>` +
     `<span class="chip">有效力量K线 <b>${(bar.active_power_lines || []).length}</b> 条</span>` +
-    `<span class="chip ${dirClass(latestTrend && latestTrend.direction)}">趋势阶段 <b>${latestTrend ? latestTrend.phase : '—'}</b><span class="sub">破坏位 ${latestTrend ? fmt(latestTrend.break_level, 0) : '—'}</span></span>`;
+    `<span class="chip ${escapeHtml(dirClass(latestTrend && latestTrend.direction))}">趋势阶段 <b>${escapeHtml(latestTrend ? trendLabel(latestTrend.phase) : '—')}</b><span class="sub">破坏位 ${escapeHtml(latestTrend ? fmt(latestTrend.break_level, 0) : '—')}</span></span>`;
 }
 
 function renderSnapshot(){
-  const idx = selectedIdx >= 0 ? selectedIdx : bars.length - 1;
+  const idx = currentBarIndex();
   const bar = bars[idx];
   if (!bar){ snapshotEl.innerHTML = '<span class="hint">无数据</span>'; return; }
   const lines = (bar.active_power_lines || []).map(l =>
-    `<span class="power-chip ${dirClass(l.direction)}">${DIR_TEXT[l.direction] || '无'} ${l.score ?? '—'}分 · ${l.time} · ${l.shape === 'triple' ? '三线' : l.shape === 'double' ? '双线' : '单线'}${l.is_high_volume ? ' · 高量' : ''}</span>`
+    `<span class="power-chip ${escapeHtml(dirClass(l.direction))}">${escapeHtml(DIR_TEXT[l.direction] || '无')} ${escapeHtml(l.score ?? '—')}分 · ${escapeHtml(l.time)} · ${l.shape === 'triple' ? '三线' : l.shape === 'double' ? '双线' : '单线'}${l.is_high_volume ? ' · 高量' : ''}</span>`
   ).join('') || '<span class="hint">无</span>';
   const trends = (bar.active_trend_lines || []).map(t =>
-    `<span class="power-chip ${dirClass(t.direction)}">${t.phase} · ${DIR_TEXT[t.direction] || ''} · 起点 ${t.time} · 破坏位 ${fmt(t.break_level, 0)}</span>`
+    `<span class="power-chip ${escapeHtml(dirClass(t.direction))}">${escapeHtml(trendLabel(t.phase))} · ${escapeHtml(DIR_TEXT[t.direction] || '')} · 起点 ${escapeHtml(t.time)} · 破坏位 ${escapeHtml(fmt(t.break_level, 0))}</span>`
   ).join('') || '<span class="hint">无</span>';
   snapshotEl.innerHTML = `
-    <h2>周线计分截面 · ${bar.week_date}${selectedIdx >= 0 ? '（历史周，双击图表返回最新）' : '（最新）'}</h2>
+    <h2>周线计分截面 · ${escapeHtml(bar.week_date)}${hasHistoricalSelection() ? '（历史周，双击图表返回最新）' : '（最新）'}</h2>
     <div class="grid">
-      <div><em>OHLC</em>${fmt(bar.o,0)} / ${fmt(bar.h,0)} / ${fmt(bar.l,0)} / ${fmt(bar.c,0)}</div>
-      <div><em>VOL / MV(3,3)</em>${fmtVol(bar.vol)} / ${fmtVol(bar.vol_ma3)}</div>
-      <div><em>BOLL TOP / MID / BOTTOM</em>${fmt(bar.boll_top,0)} / ${fmt(bar.boll_mid,0)} / ${fmt(bar.boll_bottom,0)}</div>
-      <div><em>力量总方向 / 总分 / 当前K分</em><span class="${dirClass(bar.power_direction)}-text">${DIR_TEXT[bar.power_direction] || '无'}</span> / ${bar.total_power_score ?? '—'} / ${bar.bar_power_score ?? '—'}</div>
-      <div><em>力量反转</em>${bar.power_reversal ? '是（' + (bar.power_change_time || '') + '）' : '否'}</div>
+      <div><em>OHLC</em>${escapeHtml(fmt(bar.o,0))} / ${escapeHtml(fmt(bar.h,0))} / ${escapeHtml(fmt(bar.l,0))} / ${escapeHtml(fmt(bar.c,0))}</div>
+      <div><em>VOL / MV(3,3)</em>${escapeHtml(fmtVol(bar.vol))} / ${escapeHtml(fmtVol(bar.vol_ma3))}</div>
+      <div><em>BOLL TOP / MID / BOTTOM</em>${escapeHtml(fmt(bar.boll_top,0))} / ${escapeHtml(fmt(bar.boll_mid,0))} / ${escapeHtml(fmt(bar.boll_bottom,0))}</div>
+      <div><em>力量总方向 / 总分 / 当前K分</em><span class="${escapeHtml(dirClass(bar.power_direction))}-text">${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</span> / ${escapeHtml(bar.total_power_score ?? '—')} / ${escapeHtml(bar.bar_power_score ?? '—')}</div>
+      <div><em>力量反转</em>${bar.power_reversal ? '是（' + escapeHtml(bar.power_change_time || '') + '）' : '否'}</div>
+      <div><em>计算起点</em>${escapeHtml(bar.calc_start || '—')}</div>
       <div><em>趋势线</em>${trends}</div>
     </div>
     <div><em class="hint">全部有效力量K线（红↑向上 / 绿↓向下）</em><br>${lines}</div>`;
@@ -181,8 +297,8 @@ async function loadSymbols(){
   const groups = {};
   data.forEach(s => { (groups[s.exchange] = groups[s.exchange] || []).push(s); });
   selectEl.innerHTML = Object.entries(groups).map(([ex, list]) =>
-    `<optgroup label="${ex}">` + list.map(s =>
-      `<option value="${s.code}">${s.short_name} · ${s.cn_name} · ${s.code}</option>`).join('') + '</optgroup>'
+    `<optgroup label="${escapeHtml(ex)}">` + list.map(s =>
+      `<option value="${escapeHtml(s.code)}">${escapeHtml(s.short_name)} · ${escapeHtml(s.cn_name)} · ${escapeHtml(s.code)}</option>`).join('') + '</optgroup>'
   ).join('');
   selectEl.addEventListener('change', () => loadBars(selectEl.value));
   if (data.length){ selectEl.value = data.find(s => s.code === 'rbJQ00.SF') ? 'rbJQ00.SF' : data[0].code; loadBars(selectEl.value); }

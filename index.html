@@ -36,6 +36,19 @@
   .power-chip{display:inline-block;border:1px solid var(--border);border-radius:6px;padding:4px 8px;margin:3px 6px 0 0;font-size:12px;background:#12141a}
   .power-chip.up{border-color:var(--red);color:var(--red)}
   .power-chip.down{border-color:var(--green);color:var(--green)}
+  #alerts{border-top:1px solid var(--border);background:var(--panel);padding:12px 18px;font-size:13px}
+  #alerts h2{font-size:14px;margin-bottom:8px;color:var(--gold)}
+  #alerts h3{font-size:12px;margin:0 0 6px;color:var(--muted);font-weight:600}
+  #alerts .alert-cols{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px}
+  @media (max-width:760px){#alerts .alert-cols{grid-template-columns:1fr}}
+  .alert-row{display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:6px;padding:4px 9px;margin:0 0 4px;font-size:12px;background:#12141a}
+  .alert-row .nm{font-weight:600}
+  .alert-row .sc{color:var(--muted);font-size:11px}
+  .alert-row .dt{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
+  .alert-row .dt.up{color:var(--red)} .alert-row .dt.down{color:var(--green)}
+  .arrow{font-weight:700;border-radius:5px;padding:1px 6px;font-size:11px}
+  .arrow.up{color:var(--red);background:rgba(239,68,68,.14)}
+  .arrow.down{color:var(--green);background:rgba(34,197,94,.14)}
   .hint{color:var(--muted);font-size:12px}
   .up-text{color:var(--red)} .down-text{color:var(--green)}
 </style>
@@ -53,6 +66,19 @@
 <div id="chips"></div>
 <div id="chart"></div>
 <div id="snapshot"><span class="hint">点击任意一根周K，查看该周收盘时的计分截面（不使用之后的K线）。默认显示最新一周。</span></div>
+<div id="alerts">
+  <h2>力量反转预警 <span id="alertsWeek" class="hint"></span></h2>
+  <div class="alert-cols">
+    <div class="alert-col">
+      <h3>方向反转 <span id="revCnt" class="hint"></span></h3>
+      <div id="revList"><span class="hint">加载中…</span></div>
+    </div>
+    <div class="alert-col">
+      <h3>分数跳变榜（|Δ|≥3）<span id="jmpCnt" class="hint"></span></h3>
+      <div id="jmpList"><span class="hint">加载中…</span></div>
+    </div>
+  </div>
+</div>
 
 <script>
 const SUPABASE_URL = "https://yllnlwrpbllgscqaplgm.supabase.co";
@@ -186,7 +212,8 @@ const markerSeriesHandler = {
             ctx.beginPath();
             ctx.moveTo(x + 4.5, y);
             ctx.lineTo(x - 0.5, y - 4); ctx.lineTo(x - 0.5, y - 1.6);
-            ctx.lineTo(x - 4.5, y - 1.6); ctx.lineTo(x - 4.5, y + 1.6);
+            ctx.lineTo(x - 0.5, y - 1.6); ctx.lineTo(x - 4.5, y - 1.6);
+            ctx.lineTo(x - 4.5, y + 1.6); ctx.lineTo(x - 0.5, y + 1.6);
             ctx.lineTo(x - 0.5, y + 1.6); ctx.lineTo(x - 0.5, y + 4);
             ctx.closePath(); ctx.fill();
             ctx.fillStyle = '#2293dd';
@@ -353,8 +380,46 @@ document.getElementById('chart').addEventListener('dblclick', () => {
   selectedIdx = -1; drawMarkers(); renderSnapshot();
 });
 
+// ===== 力量反转预警（全市场，最近两周对比）=====
+async function loadAlerts(){
+  const revList = document.getElementById('revList');
+  const jmpList = document.getElementById('jmpList');
+  try {
+    const w1 = (await dbSelect('weekly_bars', 'select=week_date&order=week_date.desc&limit=1'))[0].week_date;
+    const w0 = (await dbSelect('weekly_bars', 'select=week_date&week_date=lt.' + encodeURIComponent(w1) + '&order=week_date.desc&limit=1'))[0].week_date;
+    const [cur, prevRows] = await Promise.all([
+      dbSelect('weekly_bars', 'select=symbol,total_power_score,power_direction,power_reversal,power_change_time&week_date=eq.' + encodeURIComponent(w1)),
+      dbSelect('weekly_bars', 'select=symbol,total_power_score&week_date=eq.' + encodeURIComponent(w0)),
+    ]);
+    const prev = {}; prevRows.forEach(b => { prev[b.symbol] = b; });
+    const nameOf = {}; allSymbols.forEach(s => { nameOf[s.code] = s.short_name + ' · ' + s.cn_name; });
+    document.getElementById('alertsWeek').textContent = '本周 ' + w1 + ' · 对比上周 ' + w0;
+
+    const revs = cur.filter(b => b.power_reversal)
+      .sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
+    const jumps = cur.map(b => {
+      const p = prev[b.symbol];
+      if (!p || b.total_power_score === null || p.total_power_score === null) return null;
+      const d = b.total_power_score - p.total_power_score;
+      return Math.abs(d) >= 3 ? { ...b, from: p.total_power_score, delta: d } : null;
+    }).filter(Boolean).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+    document.getElementById('revCnt').textContent = '共 ' + revs.length;
+    document.getElementById('jmpCnt').textContent = '共 ' + jumps.length;
+    revList.innerHTML = revs.length ? revs.map(b =>
+      `<div class="alert-row"><span class="arrow ${escapeHtml(b.power_direction)}">${b.power_direction === 'up' ? '转↑' : '转↓'}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分 · ${escapeHtml(b.power_change_time || '')}</span></div>`
+    ).join('') : '<span class="hint">本周无方向反转品种</span>';
+    jmpList.innerHTML = jumps.length ? jumps.map(b =>
+      `<div class="alert-row"><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${escapeHtml(b.from)} → ${escapeHtml(b.total_power_score)}</span><span class="dt ${b.delta > 0 ? 'up' : 'down'}">${b.delta > 0 ? '+' : ''}${escapeHtml(b.delta)}</span></div>`
+    ).join('') : '<span class="hint">本周无显著跳变</span>';
+  } catch (e) {
+    revList.innerHTML = '<span class="hint">预警加载失败: ' + escapeHtml(e.message) + '</span>';
+    jmpList.innerHTML = '';
+  }
+}
+
 initChart();
-loadSymbols();
+loadSymbols().then(() => loadAlerts());
 </script>
 </body>
 </html>

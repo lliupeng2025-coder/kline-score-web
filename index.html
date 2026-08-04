@@ -212,8 +212,7 @@ const markerSeriesHandler = {
             ctx.beginPath();
             ctx.moveTo(x + 4.5, y);
             ctx.lineTo(x - 0.5, y - 4); ctx.lineTo(x - 0.5, y - 1.6);
-            ctx.lineTo(x - 0.5, y - 1.6); ctx.lineTo(x - 4.5, y - 1.6);
-            ctx.lineTo(x - 4.5, y + 1.6); ctx.lineTo(x - 0.5, y + 1.6);
+            ctx.lineTo(x - 4.5, y - 1.6); ctx.lineTo(x - 4.5, y + 1.6);
             ctx.lineTo(x - 0.5, y + 1.6); ctx.lineTo(x - 0.5, y + 4);
             ctx.closePath(); ctx.fill();
             ctx.fillStyle = '#2293dd';
@@ -418,8 +417,20 @@ async function loadAlerts(){
   }
 }
 
-initChart();
-loadSymbols().then(() => loadAlerts());
+// 启动保护：图表库加载失败时给出可见错误，避免页面无声卡在"加载中…"
+if (!window.LightweightCharts) {
+  statusEl.textContent = '图表库加载失败，请检查网络后刷新重试';
+  document.getElementById('revList').innerHTML = '<span class="hint">图表库加载失败，页面无法渲染</span>';
+  document.getElementById('jmpList').innerHTML = '';
+} else {
+  try { initChart(); }
+  catch (e) {
+    statusEl.textContent = '图表初始化失败: ' + e.message;
+    document.getElementById('revList').innerHTML = '<span class="hint">图表初始化失败: ' + escapeHtml(e.message) + '</span>';
+    document.getElementById('jmpList').innerHTML = '';
+  }
+  if (window.LightweightCharts && chart) loadSymbols().then(() => loadAlerts());
+}
 </script>
 </body>
 </html>

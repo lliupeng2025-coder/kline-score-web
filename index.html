@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260804"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260807"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -193,7 +193,7 @@ const markerSeriesHandler = {
           // 力量箭头：向上=红色叠放在K线下方，向下=绿色叠放在K线上方，分数=箭头个数
           for (let k = 0; k < upCount; k++) drawArrow(ctx, x, lowY + 14 + k * arrowStep, s, 'up', '#ef4444');
           for (let k = 0; k < downCount; k++) drawArrow(ctx, x, highY - 14 - k * arrowStep, s, 'down', '#22c55e');
-          // 趋势阶段金色圆点和“趋势1/趋势2/趋势3”
+          // 趋势阶段金色圆点和"趋势1/趋势2/趋势3"
           if (d.trend){
             const upTrend = d.trend.direction === 'up';
             const y = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
@@ -203,7 +203,7 @@ const markerSeriesHandler = {
             ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
             ctx.fillText(trendLabel(d.trend.phase), x, upTrend ? y + 13 : y - 13);
           }
-          // 计算起点：蓝色圆形 + 白色右箭头 + “起点”字样
+          // 计算起点：蓝色圆形 + 白色右箭头 + "起点"字样
           if (d.badge){
             const y = highY - 14 - downCount * arrowStep - (d.reversal ? 24 : 0) - 34;
             ctx.fillStyle = '#2293dd';
@@ -359,7 +359,20 @@ async function loadBars(code){
   statusEl.textContent = '加载 ' + code + ' …';
   selectedIdx = -1;
   try { bars = await dbSelect('weekly_bars', 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=week_date.asc'); }
-  catch (e){ statusEl.textContent = 'K线加载失败: ' + e.message; return; }
+  catch (e){
+    bars = [];
+    candleSeries.setData([]);
+    bollMid.setData([]);
+    bollTop.setData([]);
+    bollBottom.setData([]);
+    volSeries.setData([]);
+    volMaSeries.setData([]);
+    markerSeries.setData([]);
+    chipsEl.innerHTML = '';
+    snapshotEl.innerHTML = '<span class="hint">K线加载失败: ' + escapeHtml(e.message) + '</span>';
+    statusEl.textContent = 'K线加载失败: ' + e.message;
+    return;
+  }
   candleSeries.setData(bars.map(b => ({ time: b.week_date, open: +b.o, high: +b.h, low: +b.l, close: +b.c })));
   bollMid.setData(bars.filter(b => b.boll_mid !== null).map(b => ({ time: b.week_date, value: +b.boll_mid })));
   bollTop.setData(bars.filter(b => b.boll_top !== null).map(b => ({ time: b.week_date, value: +b.boll_top })));

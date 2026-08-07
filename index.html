@@ -339,6 +339,20 @@ function applySearch(){
     (s.short_name || '').toLowerCase().includes(kw) ||
     (s.cn_name || '').toLowerCase().includes(kw));
   if (!list.length){ selectEl.innerHTML = '<option value="">无匹配品种</option>'; return; }
+  if (kw){
+    // 精确/前缀匹配优先：搜"橡胶"应落"橡胶"而非"BR橡胶"（2026-08-07 用户误选事件）
+    const rank = s => {
+      const cn = (s.cn_name || '').toLowerCase();
+      const sn = (s.short_name || '').toLowerCase();
+      const cd = (s.code || '').toLowerCase();
+      if (cn === kw) return 0;
+      if (sn === kw || cd === kw) return 1;
+      if (cn.startsWith(kw)) return 2;
+      if (sn.startsWith(kw) || cd.startsWith(kw)) return 3;
+      return 4;
+    };
+    list.sort((a, b) => rank(a) - rank(b));
+  }
   renderOptions(list);
   selectEl.value = list[0].code;
 }

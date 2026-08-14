@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260807"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260814"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -90,6 +90,17 @@ async function dbSelect(table, query){
   });
   if (!resp.ok) throw new Error(table + ' HTTP ' + resp.status);
   return resp.json();
+}
+
+// 分页拉全量：PostgREST max-rows=1000，升序不带分页会把超长历史品种（如沪铜 1500+ 周）无声截断为最旧 1000 行
+async function dbSelectAll(table, query){
+  const out = [];
+  for (let offset = 0; ; offset += 1000){
+    const page = await dbSelect(table, query + '&limit=1000&offset=' + offset);
+    out.push(...page);
+    if (page.length < 1000) break;
+  }
+  return out;
 }
 
 const statusEl = document.getElementById('status');
@@ -372,7 +383,7 @@ async function loadSymbols(){
 async function loadBars(code){
   statusEl.textContent = '加载 ' + code + ' …';
   selectedIdx = -1;
-  try { bars = await dbSelect('weekly_bars', 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=week_date.asc'); }
+  try { bars = await dbSelectAll('weekly_bars', 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=week_date.asc'); }
   catch (e){
     bars = [];
     candleSeries.setData([]);

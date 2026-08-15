@@ -333,6 +333,8 @@ function renderSnapshot(){
 }
 
 let allSymbols = [];
+let currentCode = null;  // 当前已加载的品种
+let searchTimer = null;  // 搜索自动跳转防抖
 
 function renderOptions(list){
   const groups = {};
@@ -365,23 +367,35 @@ function applySearch(){
     list.sort((a, b) => rank(a) - rank(b));
   }
   renderOptions(list);
-  selectEl.value = list[0].code;
+  clearTimeout(searchTimer);
+  if (kw){
+    selectEl.value = list[0].code;
+    // 搜索时自动跳转到最佳匹配（防抖，避免每个字符都请求一次）
+    // 修复：此前仅程序化设置 value，不触发 change 事件，点击已预选项时页面不跳转
+    if (list[0].code !== currentCode){
+      searchTimer = setTimeout(() => { if (selectEl.value) loadBars(selectEl.value); }, 350);
+    }
+  } else {
+    // 清空搜索时恢复显示当前已加载品种，避免下拉框与图表不一致
+    selectEl.value = currentCode || list[0].code;
+  }
 }
 
 async function loadSymbols(){
   try { allSymbols = await dbSelect('symbols', 'select=*&order=sort_order.asc,code.asc'); }
   catch (e){ statusEl.textContent = '品种加载失败: ' + e.message; return; }
   renderOptions(allSymbols);
-  selectEl.addEventListener('change', () => { if (selectEl.value) loadBars(selectEl.value); });
+  selectEl.addEventListener('change', () => { clearTimeout(searchTimer); if (selectEl.value) loadBars(selectEl.value); });
   searchEl.addEventListener('input', applySearch);
   searchEl.addEventListener('keydown', ev => {
-    if (ev.key === 'Enter' && selectEl.value){ loadBars(selectEl.value); searchEl.blur(); }
+    if (ev.key === 'Enter' && selectEl.value){ clearTimeout(searchTimer); loadBars(selectEl.value); searchEl.blur(); }
   });
   if (allSymbols.length){ selectEl.value = allSymbols.find(s => s.code === 'rbJQ00.SF') ? 'rbJQ00.SF' : allSymbols[0].code; loadBars(selectEl.value); }
 }
 
 async function loadBars(code){
   statusEl.textContent = '加载 ' + code + ' …';
+  currentCode = code;
   selectedIdx = -1;
   try { bars = await dbSelectAll('weekly_bars', 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=week_date.asc'); }
   catch (e){

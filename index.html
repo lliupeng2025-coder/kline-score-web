@@ -421,31 +421,35 @@ document.getElementById('chart').addEventListener('dblclick', () => {
   selectedIdx = -1; drawMarkers(); renderSnapshot();
 });
 
-// ===== 力量反转预警（全市场，最近两周对比）=====
+// ===== 力量反转预警（全市场，各品种自身最近两周对比）=====
 async function loadAlerts(){
   const revList = document.getElementById('revList');
   const jmpList = document.getElementById('jmpList');
   try {
     const w1 = (await dbSelect('weekly_bars', 'select=week_date&order=week_date.desc&limit=1'))[0].week_date;
-    const w0 = (await dbSelect('weekly_bars', 'select=week_date&week_date=lt.' + encodeURIComponent(w1) + '&order=week_date.desc&limit=1'))[0].week_date;
-    const [cur, prevRows] = await Promise.all([
-      dbSelect('weekly_bars', 'select=symbol,total_power_score,power_direction&week_date=eq.' + encodeURIComponent(w1)),
-      dbSelect('weekly_bars', 'select=symbol,total_power_score,power_direction&week_date=eq.' + encodeURIComponent(w0)),
-    ]);
-    const prev = {}; prevRows.forEach(b => { prev[b.symbol] = b; });
+    // 个别品种周最后交易日不是周五（如胶合板 08-20），全局"第二周"会缺行；
+    // 改为取最近约 3 周的行，按品种分组后各自比较最新两周
+    const since = new Date(Date.parse(w1 + 'T00:00:00') - 20 * 864e5).toISOString().slice(0, 10);
+    const w1min = new Date(Date.parse(w1 + 'T00:00:00') - 3 * 864e5).toISOString().slice(0, 10);
+    const rows = await dbSelect('weekly_bars', 'select=symbol,week_date,total_power_score,power_direction&week_date=gte.' + encodeURIComponent(since) + '&order=week_date.desc&limit=1000');
+    const bySym = {};
+    rows.forEach(b => { (bySym[b.symbol] = bySym[b.symbol] || []).push(b); });
+    const pairs = {};  // symbol -> {cur, prev}（最新行落在本周内才参与）
+    Object.entries(bySym).forEach(([sym, list]) => {
+      if (list.length >= 2 && list[0].week_date >= w1min) pairs[sym] = { cur: list[0], prev: list[1] };
+    });
     const nameOf = {}; allSymbols.forEach(s => { nameOf[s.code] = s.short_name + ' · ' + s.cn_name; });
-    document.getElementById('alertsWeek').textContent = '本周 ' + w1 + ' · 对比上周 ' + w0;
+    document.getElementById('alertsWeek').textContent = '本周 ' + w1 + ' · 对比各品种上一周';
 
-    // 反转新规则：本周方向与上周方向不一致即算反转（含与"无"的相互切换），前端直接比较两周方向
-    const revs = cur.filter(b => {
-      const p = prev[b.symbol];
-      return p && isReversal(p.power_direction, b.power_direction);
-    }).sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
-    const jumps = cur.map(b => {
-      const p = prev[b.symbol];
-      if (!p || b.total_power_score === null || p.total_power_score === null) return null;
-      const d = b.total_power_score - p.total_power_score;
-      return Math.abs(d) >= 3 ? { ...b, from: p.total_power_score, delta: d } : null;
+    // 反转新规则：本周方向与上一周方向不一致即算反转（含与"无"的相互切换），前端直接比较两周方向
+    const revs = Object.values(pairs).filter(p => isReversal(p.prev.power_direction, p.cur.power_direction))
+      .map(p => p.cur)
+      .sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
+    const jumps = Object.values(pairs).map(p => {
+      const b = p.cur, q = p.prev;
+      if (b.total_power_score === null || q.total_power_score === null) return null;
+      const d = b.total_power_score - q.total_power_score;
+      return Math.abs(d) >= 3 ? { ...b, from: q.total_power_score, delta: d } : null;
     }).filter(Boolean).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
 
     document.getElementById('revCnt').textContent = '共 ' + revs.length;
@@ -453,7 +457,7 @@ async function loadAlerts(){
     revList.innerHTML = revs.length ? revs.map(b => {
       const dir = normDirection(b.power_direction);
       const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
-      return `<div class="alert-row"><span class="arrow ${dir}">${arrow}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分 · ${escapeHtml(w1)}</span></div>`;
+      return `<div class="alert-row"><span class="arrow ${dir}">${arrow}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分 · ${escapeHtml(b.week_date)}</span></div>`;
     }).join('') : '<span class="hint">本周无方向反转品种</span>';
     jmpList.innerHTML = jumps.length ? jumps.map(b =>
       `<div class="alert-row"><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${escapeHtml(b.from)} → ${escapeHtml(b.total_power_score)}</span><span class="dt ${b.delta > 0 ? 'up' : 'down'}">${b.delta > 0 ? '+' : ''}${escapeHtml(b.delta)}</span></div>`

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260816"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260821"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -49,6 +49,7 @@
   .arrow{font-weight:700;border-radius:5px;padding:1px 6px;font-size:11px}
   .arrow.up{color:var(--red);background:rgba(239,68,68,.14)}
   .arrow.down{color:var(--green);background:rgba(34,197,94,.14)}
+  .arrow.none{color:var(--muted);background:rgba(138,143,154,.14)}
   .hint{color:var(--muted);font-size:12px}
   .up-text{color:var(--red)} .down-text{color:var(--green)}
 </style>
@@ -120,10 +121,11 @@ const trendLabel = phase =>
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])
 );
-const validDirection = value => value === 'up' || value === 'down';
+const normDirection = value => (value === 'up' || value === 'down') ? value : 'none';
 const arrowCountForScore = score => Math.max(0, Math.min(2, Number(score) || 0));
+// 反转新规则（2026-08-21 起）：上根周K方向与当前周K方向不一致即算反转，含与"无"方向的相互切换
 const isReversal = (previous, current) =>
-  validDirection(previous) && validDirection(current) && previous !== current;
+  normDirection(previous) !== normDirection(current);
 function reversalFlags(source, limit) {
   const flags = new Set();
   const end = Math.min(source.length - 1, limit);
@@ -318,6 +320,8 @@ function renderSnapshot(){
   const trends = (bar.active_trend_lines || []).map(t =>
     `<span class="power-chip ${escapeHtml(dirClass(t.direction))}">${escapeHtml(trendLabel(t.phase))} · ${escapeHtml(DIR_TEXT[t.direction] || '')} · 起点 ${escapeHtml(t.time)} · 破坏位 ${escapeHtml(fmt(t.break_level, 0))}</span>`
   ).join('') || '<span class="hint">无</span>';
+  const prevBar = idx > 0 ? bars[idx - 1] : null;
+  const barReversal = prevBar ? isReversal(prevBar.power_direction, bar.power_direction) : false;
   snapshotEl.innerHTML = `
     <h2>周线计分截面 · ${escapeHtml(bar.week_date)}${hasHistoricalSelection() ? '（历史周，双击图表返回最新）' : '（最新）'}</h2>
     <div class="grid">
@@ -325,7 +329,7 @@ function renderSnapshot(){
       <div><em>VOL / MV(3,3)</em>${escapeHtml(fmtVol(bar.vol))} / ${escapeHtml(fmtVol(bar.vol_ma3))}</div>
       <div><em>BOLL TOP / MID / BOTTOM</em>${escapeHtml(fmt(bar.boll_top,0))} / ${escapeHtml(fmt(bar.boll_mid,0))} / ${escapeHtml(fmt(bar.boll_bottom,0))}</div>
       <div><em>力量总方向 / 总分 / 当前K分</em><span class="${escapeHtml(dirClass(bar.power_direction))}-text">${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</span> / ${escapeHtml(bar.total_power_score ?? '—')} / ${escapeHtml(bar.bar_power_score ?? '—')}</div>
-      <div><em>力量反转</em>${bar.power_reversal ? '是（' + escapeHtml(bar.power_change_time || '') + '）' : '否'}</div>
+      <div><em>力量反转</em>${barReversal ? '是（' + escapeHtml(bar.week_date) + '）' : '否'}</div>
       <div><em>计算起点</em>${escapeHtml(bar.calc_start || '—')}</div>
       <div><em>趋势线</em>${trends}</div>
     </div>
@@ -425,15 +429,18 @@ async function loadAlerts(){
     const w1 = (await dbSelect('weekly_bars', 'select=week_date&order=week_date.desc&limit=1'))[0].week_date;
     const w0 = (await dbSelect('weekly_bars', 'select=week_date&week_date=lt.' + encodeURIComponent(w1) + '&order=week_date.desc&limit=1'))[0].week_date;
     const [cur, prevRows] = await Promise.all([
-      dbSelect('weekly_bars', 'select=symbol,total_power_score,power_direction,power_reversal,power_change_time&week_date=eq.' + encodeURIComponent(w1)),
-      dbSelect('weekly_bars', 'select=symbol,total_power_score&week_date=eq.' + encodeURIComponent(w0)),
+      dbSelect('weekly_bars', 'select=symbol,total_power_score,power_direction&week_date=eq.' + encodeURIComponent(w1)),
+      dbSelect('weekly_bars', 'select=symbol,total_power_score,power_direction&week_date=eq.' + encodeURIComponent(w0)),
     ]);
     const prev = {}; prevRows.forEach(b => { prev[b.symbol] = b; });
     const nameOf = {}; allSymbols.forEach(s => { nameOf[s.code] = s.short_name + ' · ' + s.cn_name; });
     document.getElementById('alertsWeek').textContent = '本周 ' + w1 + ' · 对比上周 ' + w0;
 
-    const revs = cur.filter(b => b.power_reversal)
-      .sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
+    // 反转新规则：本周方向与上周方向不一致即算反转（含与"无"的相互切换），前端直接比较两周方向
+    const revs = cur.filter(b => {
+      const p = prev[b.symbol];
+      return p && isReversal(p.power_direction, b.power_direction);
+    }).sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
     const jumps = cur.map(b => {
       const p = prev[b.symbol];
       if (!p || b.total_power_score === null || p.total_power_score === null) return null;
@@ -443,9 +450,11 @@ async function loadAlerts(){
 
     document.getElementById('revCnt').textContent = '共 ' + revs.length;
     document.getElementById('jmpCnt').textContent = '共 ' + jumps.length;
-    revList.innerHTML = revs.length ? revs.map(b =>
-      `<div class="alert-row"><span class="arrow ${escapeHtml(b.power_direction)}">${b.power_direction === 'up' ? '转↑' : '转↓'}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分 · ${escapeHtml(b.power_change_time || '')}</span></div>`
-    ).join('') : '<span class="hint">本周无方向反转品种</span>';
+    revList.innerHTML = revs.length ? revs.map(b => {
+      const dir = normDirection(b.power_direction);
+      const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
+      return `<div class="alert-row"><span class="arrow ${dir}">${arrow}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分 · ${escapeHtml(w1)}</span></div>`;
+    }).join('') : '<span class="hint">本周无方向反转品种</span>';
     jmpList.innerHTML = jumps.length ? jumps.map(b =>
       `<div class="alert-row"><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${escapeHtml(b.from)} → ${escapeHtml(b.total_power_score)}</span><span class="dt ${b.delta > 0 ? 'up' : 'down'}">${b.delta > 0 ? '+' : ''}${escapeHtml(b.delta)}</span></div>`
     ).join('') : '<span class="hint">本周无显著跳变</span>';

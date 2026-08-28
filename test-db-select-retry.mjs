@@ -3,13 +3,21 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-const match = html.match(
-  /async function dbSelect\(table, query\)\{[\s\S]*?\n\}\n\n\/\/ 分页拉全量/
+const normalizeNewlines = source => source.replace(/\r\n/g, '\n');
+const dbSelectPattern =
+  /async function dbSelect\(table, query\)\{[\s\S]*?\n\}\n\n\/\/ 分页拉全量/;
+const html = normalizeNewlines(
+  readFileSync(new URL('./index.html', import.meta.url), 'utf8'),
 );
+const match = html.match(dbSelectPattern);
 
 if (!match) throw new Error('index.html 中未找到 dbSelect');
 const dbSelectSource = match[0].replace(/\n\n\/\/ 分页拉全量$/, '');
+
+test('test harness extracts dbSelect from CRLF HTML', () => {
+  const crlfHtml = html.replace(/\n/g, '\r\n');
+  assert.ok(normalizeNewlines(crlfHtml).match(dbSelectPattern));
+});
 
 function loadDbSelect(fetchImpl, delays = []) {
   const context = {
@@ -93,8 +101,10 @@ test('dbSelect throws the final transient error after exhausting retries', async
     return { ok: false, status: 504 };
   }, delays);
 
-  await assert.rejects(dbSelect('weekly_bars', 'select=symbol'), /weekly_bars HTTP 504/);
+  await assert.rejects(
+    dbSelect('weekly_bars', 'select=symbol'),
+    { message: 'weekly_bars HTTP 504' },
+  );
   assert.equal(calls, 4);
   assert.deepEqual(delays, [600, 1200, 2400]);
 });
-

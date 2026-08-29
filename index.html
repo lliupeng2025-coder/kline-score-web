@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260828"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260829"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -159,7 +159,7 @@ const markerPayloadForBar = bar => {
   const ref = toFinitePrice(bar.c), high = toFinitePrice(bar.h), low = toFinitePrice(bar.l);
   if (![ref, high, low].every(Number.isFinite)) return null;
   return {
-    time: bar.week_date, ref, high, low,
+    time: bar.week_date, markerKey: bar.week_date, ref, high, low,
     up: 0, down: 0, trend: null, badge: false, reversal: false,
   };
 };
@@ -188,6 +188,32 @@ function drawArrow(ctx, x, y, s, dir, color){
   ctx.closePath();
   ctx.fill();
 }
+function layoutReversalLabels(items, options){
+  const labelWidth = Math.max(1, Number(options && options.labelWidth) || 1);
+  const labelHeight = Math.max(1, Number(options && options.labelHeight) || 1);
+  const laneCount = Math.max(1, Math.floor(Number(options && options.laneCount) || 1));
+  const laneGap = Math.max(0, Number(options && options.laneGap) || 0);
+  const minHorizontalGap = Math.max(labelWidth + 8, Number(options && options.minHorizontalGap) || 0);
+  const accepted = [];
+  const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  return (Array.isArray(items) ? items : [])
+    .filter(item => item && Number.isFinite(item.x) && Number.isFinite(item.baseY))
+    .sort((a, b) => a.x - b.x)
+    .map(item => {
+      if (accepted.some(other => Math.abs(item.x - other.x) < minHorizontalGap)) {
+        return { key: item.key, showLabel: false, labelY: item.baseY, rect: null };
+      }
+      for (let lane = 0; lane < laneCount; lane++) {
+        const labelY = item.baseY - lane * (labelHeight + laneGap);
+        const rect = { left: item.x - labelWidth / 2, right: item.x + labelWidth / 2, top: labelY - labelHeight / 2, bottom: labelY + labelHeight / 2 };
+        if (!accepted.some(other => intersects(rect, other.rect))) {
+          accepted.push({ x: item.x, rect });
+          return { key: item.key, showLabel: true, labelY, rect };
+        }
+      }
+      return { key: item.key, showLabel: false, labelY: item.baseY, rect: null };
+    });
+}
 const markerSeriesHandler = {
   name: 'scoreMarkers',
   defaultOptions: () => ({ priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
@@ -200,10 +226,26 @@ const markerSeriesHandler = {
         if (!markerState || !Array.isArray(markerState.bars)) return;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        markerState.bars.forEach(bar => {
-          const d = bar && bar.originalData, x = Number(bar && bar.x);
-          if (!d || !Number.isFinite(x)) return;
-          const s = Math.max(4, Math.min(8, (markerState.barSpacing || 10) * 0.55));
+        const markerBars = markerState.bars.map(bar => {
+          const d = bar && bar.originalData;
+          const rawX = bar && bar.x;
+          const x = typeof rawX === 'number' && Number.isFinite(rawX) ? rawX : NaN;
+          return { bar, d, x };
+        }).filter(item => item.d && Number.isFinite(item.x));
+        const spacing = markerState.barSpacing || 10;
+        const s = Math.max(4, Math.min(8, spacing * 0.55));
+        const arrowStep = s * 2 + 4;
+        const reversalCandidates = markerBars.map(({ d, x }) => {
+          const highY = priceConverter(d.high);
+          const downCount = Math.max(0, Math.min(2, Number(d.down) || 0));
+          const baseY = highY - 14 - downCount * arrowStep - 20;
+          return d.reversal && d.markerKey && Number.isFinite(highY) ? { key: d.markerKey, x, baseY } : null;
+        }).filter(Boolean);
+        const labelWidth = ctx.measureText('反转').width + 6;
+        const reversalLayout = new Map(layoutReversalLabels(reversalCandidates, {
+          labelWidth, labelHeight: 12, laneCount: 3, laneGap: 4,
+        }).map(item => [item.key, item]));
+        markerBars.forEach(({ d, x }) => {
           const arrowStep = s * 2 + 4;
           const lowY = priceConverter(d.low), highY = priceConverter(d.high);
           if (!Number.isFinite(lowY) || !Number.isFinite(highY)) return;
@@ -238,11 +280,13 @@ const markerSeriesHandler = {
             ctx.font = '10px Microsoft YaHei, sans-serif';
             ctx.fillText('起点', x, y - 15);
           }
-          // 反转标记：后一根K线只显示简洁的文字
+          // 反转标记：仅显示当前缩放下可避让的文字，不绘制圆点
           if (d.reversal){
+            const placement = reversalLayout.get(d.markerKey);
+            if (!placement || !placement.showLabel) return;
             ctx.fillStyle = '#f87171';
             ctx.font = 'bold 10px Microsoft YaHei, sans-serif';
-            ctx.fillText('反转', x, highY - 14 - downCount * arrowStep - 15);
+            ctx.fillText('反转', x, placement.labelY);
           }
         });
       });

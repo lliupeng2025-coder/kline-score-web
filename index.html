@@ -197,7 +197,7 @@ function layoutMarkerLabels(items, options){
   const accepted = [];
   const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
   return (Array.isArray(items) ? items : [])
-    .filter(item => item && item.label && Number.isFinite(item.x) && Number.isFinite(item.baseY))
+    .filter(item => item && item.label && Number.isFinite(item.x) && Number.isFinite(item.baseY) && item.x >= 0 && item.x <= width)
     .sort((a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0) || a.x - b.x)
     .map(item => {
       const labelWidth = Math.max(1, Number(item.labelWidth) || 1);
@@ -233,14 +233,16 @@ const markerSeriesHandler = {
         ctx.textBaseline = 'middle';
         const markerBars = markerState.bars.map(bar => {
           const d = bar && bar.originalData;
-          const rawX = bar && bar.x;
+          const rawX = chart.timeScale().timeToCoordinate(d && d.markerKey);
           const x = typeof rawX === 'number' && Number.isFinite(rawX) ? rawX : NaN;
           return { bar, d, x };
-        }).filter(item => item.d && Number.isFinite(item.x));
+        });
+        const markerGutter = 14;
+        const visibleMarkerBars = markerBars.filter(item => item.d && Number.isFinite(item.x) && item.x >= markerGutter && item.x <= mediaSize.width - markerGutter);
         const spacing = markerState.barSpacing || 10;
         const s = Math.max(4, Math.min(8, spacing * 0.55));
         const arrowStep = s * 2 + 4;
-        const markerCandidates = markerBars.flatMap(({ d, x }) => {
+        const markerCandidates = visibleMarkerBars.flatMap(({ d, x }) => {
           const highY = priceConverter(d.high);
           const lowY = priceConverter(d.low);
           const downCount = Math.max(0, Math.min(2, Number(d.down) || 0));
@@ -260,7 +262,7 @@ const markerSeriesHandler = {
         const markerLabels = new Map(layoutMarkerLabels(markerCandidates, {
           width: mediaSize.width, height: mediaSize.height, labelHeight: 12, laneCount: 3, laneGap: 4,
         }).map(item => [item.key, item]));
-        markerBars.forEach(({ d, x }) => {
+        visibleMarkerBars.forEach(({ d, x }) => {
           const lowY = priceConverter(d.low), highY = priceConverter(d.high);
           if (!Number.isFinite(lowY) || !Number.isFinite(highY)) return;
           const upCount = Math.max(0, Math.min(2, Number(d.up) || 0));

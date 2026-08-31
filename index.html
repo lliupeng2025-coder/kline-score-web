@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260830"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260831"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -204,9 +204,6 @@ function layoutMarkerLabels(items, options){
       const half = labelWidth / 2;
       if (width <= labelWidth + 4) return { key: item.key, showLabel: false, labelX: item.x, labelY: item.baseY, rect: null };
       const labelX = Math.min(width - half - 2, Math.max(half + 2, item.x));
-      if (accepted.some(other => Math.abs(labelX - other.x) < (labelWidth + other.width) / 2 + 8)) {
-        return { key: item.key, showLabel: false, labelY: item.baseY, rect: null };
-      }
       for (let lane = 0; lane < laneCount; lane++) {
         const labelY = item.baseY + (item.laneDirection || -1) * lane * (labelHeight + laneGap);
         const rect = { left: labelX - half, right: labelX + half, top: labelY - labelHeight / 2, bottom: labelY + labelHeight / 2 };

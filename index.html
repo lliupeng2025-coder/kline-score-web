@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260831&marker=2"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260831&marker=3"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -188,15 +188,7 @@ function drawArrow(ctx, x, y, s, dir, color){
   ctx.closePath();
   ctx.fill();
 }
-function drawReversalBadge(ctx, x, y){
-  ctx.fillStyle = '#f87171';
-  ctx.beginPath();
-  ctx.arc(x, y, 5.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#111827';
-  ctx.font = 'bold 8px Microsoft YaHei, sans-serif';
-  ctx.fillText('反', x, y + 0.4);
-}
+const reversalLabelOffset = index => [0, 16, 32, 16][index % 4];
 function layoutMarkerLabels(items, options){
   const labelHeight = Math.max(1, Number(options && options.labelHeight) || 1);
   const laneCount = Math.max(1, Math.floor(Number(options && options.laneCount) || 1));
@@ -248,6 +240,7 @@ const markerSeriesHandler = {
         const spacing = markerState.barSpacing || 10;
         const s = Math.max(4, Math.min(8, spacing * 0.55));
         const arrowStep = s * 2 + 4;
+        let reversalLabelIndex = 0;
         const markerCandidates = visibleMarkerBars.flatMap(({ d, x }) => {
           const highY = priceConverter(d.high);
           const lowY = priceConverter(d.low);
@@ -255,7 +248,7 @@ const markerSeriesHandler = {
           const upCount = Math.max(0, Math.min(2, Number(d.up) || 0));
           if (!Number.isFinite(highY) || !Number.isFinite(lowY) || !d.markerKey) return [];
           const entries = [];
-          if (d.reversal) entries.push({ key: d.markerKey + ':reversal', label: '反转', labelWidth: ctx.measureText('反转').width + 6, x, baseY: highY - 14 - downCount * arrowStep - 20, laneDirection: -1, priority: 1 });
+          if (d.reversal) entries.push({ key: d.markerKey + ':reversal', label: '反转', labelWidth: ctx.measureText('反转').width + 6, x, baseY: highY - 14 - downCount * arrowStep - 20 - reversalLabelOffset(reversalLabelIndex++), laneDirection: -1, priority: 4 });
           if (d.trend){
             const upTrend = d.trend.direction === 'up';
             const dotY = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
@@ -308,9 +301,8 @@ const markerSeriesHandler = {
               ctx.fillText('起点', placement.labelX, placement.labelY);
             }
           }
-          // 反转标记：徽标始终显示；文字只在当前缩放下可避让时显示
+          // 反转文字：相邻反转按低-中-高-中错层，形成山形；实际重叠时再避让
           if (d.reversal){
-            drawReversalBadge(ctx, x, highY - 14 - downCount * arrowStep - 8);
             const placement = markerLabels.get(d.markerKey + ':reversal');
             if (!placement || !placement.showLabel) return;
             ctx.fillStyle = '#f87171';

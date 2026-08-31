@@ -17,23 +17,23 @@ const { layoutMarkerLabels } = context;
 test('layout keeps reversal and trend labels for the same week when their rectangles do not overlap', () => {
   const placements = layoutMarkerLabels([
     { key: 'trend', label: '趋势1', labelWidth: 30, x: 120, baseY: 120, laneDirection: -1, priority: 2 },
-    { key: 'reversal', label: '反转', labelWidth: 24, x: 120, baseY: 92, laneDirection: -1, priority: 1 },
+    { key: 'reversal', label: '反转', labelWidth: 24, x: 120, baseY: 92, laneDirection: -1, priority: 4 },
   ], { width: 300, height: 200, labelHeight: 12, laneCount: 3, laneGap: 4 });
 
   assert.deepEqual(
     JSON.parse(JSON.stringify(placements.map(item => [item.key, item.showLabel]))),
-    [['trend', true], ['reversal', true]],
+    [['reversal', true], ['trend', true]],
   );
 });
 
 test('layout still hides a same-week label whose rectangle overlaps an existing label', () => {
   const placements = layoutMarkerLabels([
     { key: 'trend', label: '趋势1', labelWidth: 30, x: 120, baseY: 120, laneDirection: -1, priority: 2 },
-    { key: 'reversal', label: '反转', labelWidth: 24, x: 120, baseY: 120, laneDirection: -1, priority: 1 },
+    { key: 'reversal', label: '反转', labelWidth: 24, x: 120, baseY: 120, laneDirection: -1, priority: 4 },
   ], { width: 300, height: 200, labelHeight: 12, laneCount: 1, laneGap: 4 });
 
   assert.deepEqual(
     JSON.parse(JSON.stringify(placements.map(item => [item.key, item.showLabel]))),
-    [['trend', true], ['reversal', false]],
+    [['reversal', true], ['trend', false]],
   );
 });

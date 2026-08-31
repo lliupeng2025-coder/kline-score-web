@@ -4,46 +4,60 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
-const match = html.match(/const markerSeriesHandler = \{[\s\S]*?\n\};\n\nfunction initChart/);
 const offsetMatch = html.match(/const reversalLabelOffset = index => \[[^;]+;/);
-if (!match) throw new Error('index.html 中未找到 markerSeriesHandler');
+const assignMatch = html.match(/function assignReversalOffsets\(source, limit, reversalTimes, byTime\)\{[\s\S]*?\n\}/);
+const layoutMatch = html.match(/function layoutMarkerLabels\(items, options\)\{[\s\S]*?\n\}\nconst markerSeriesHandler/);
+const handlerMatch = html.match(/const markerSeriesHandler = \{[\s\S]*?\n\};\n\nfunction initChart/);
 if (!offsetMatch) throw new Error('index.html 中未找到 reversalLabelOffset');
-const handlerSource = match[0].replace(/\n\nfunction initChart$/, '');
+if (!assignMatch) throw new Error('index.html 中未找到 assignReversalOffsets');
+if (!layoutMatch) throw new Error('index.html 中未找到 layoutMarkerLabels');
+if (!handlerMatch) throw new Error('index.html 中未找到 markerSeriesHandler');
+const layoutSource = layoutMatch[0].replace(/\nconst markerSeriesHandler$/, '');
+const handlerSource = handlerMatch[0].replace(/\n\nfunction initChart$/, '');
 
-test('dense reversal labels form a low-middle-high-middle-low mountain without badges', () => {
+test('stable chronological groups assign a low-middle-high-middle-low mountain', () => {
+  const context = {};
+  vm.runInNewContext(
+    `${offsetMatch[0]}\n${assignMatch[0]}\nglobalThis.assignReversalOffsets = assignReversalOffsets;`,
+    context,
+  );
+  const dates = ['a', 'b', 'c', 'd', 'e', 'gap1', 'gap2', 'gap3', 'gap4', 'gap5', 'f'];
+  const byTime = Object.fromEntries(dates.map(time => [time, { time }]));
+  context.assignReversalOffsets(dates.map(week_date => ({ week_date })), dates.length - 1, new Set(['a', 'b', 'c', 'd', 'e', 'f']), byTime);
+  assert.deepEqual(['a', 'b', 'c', 'd', 'e'].map(time => byTime[time].reversalOffset), [0, 16, 32, 16, 0]);
+  assert.equal(byTime.f.reversalOffset, 0);
+});
+
+test('real layout renders a dense low-middle-high-middle-low mountain without badges', () => {
   const dates = ['2026-07-17', '2026-07-24', '2026-07-31', '2026-08-07', '2026-08-14'];
-  const captured = [];
-  let badgeCalls = 0;
+  const drawn = [];
   const context = {
     chart: { timeScale: () => ({ timeToCoordinate: key => 80 + dates.indexOf(key) * 10 }) },
     markerState: {
-      bars: dates.map(markerKey => ({
-        originalData: { markerKey, ref: 10, high: 12, low: 8, up: 0, down: 0, reversal: true, trend: null, badge: false },
+      bars: dates.map((markerKey, index) => ({
+        originalData: { markerKey, ref: 10, high: 12, low: 8, up: 0, down: 0, reversal: true, reversalOffset: [0, 16, 32, 16, 0][index], trend: null, badge: false },
       })),
       barSpacing: 10,
     },
     drawArrow: () => {},
-    drawReversalBadge: () => { badgeCalls += 1; },
     trendLabel: () => '趋势1',
-    layoutMarkerLabels: items => {
-      captured.push(...items.filter(item => item.key.endsWith(':reversal')));
-      return items.map(item => ({ key: item.key, showLabel: true, labelX: item.x, labelY: item.baseY }));
-    },
   };
-  vm.runInNewContext(`${offsetMatch[0]}\n${handlerSource}\nglobalThis.markerSeriesHandler = markerSeriesHandler;`, context);
+  vm.runInNewContext(
+    `${layoutSource}\n${handlerSource}\nglobalThis.markerSeriesHandler = markerSeriesHandler;`,
+    context,
+  );
   const canvas = {
     textAlign: 'center', textBaseline: 'middle',
-    measureText: () => ({ width: 20 }), fillText: () => {},
+    measureText: () => ({ width: 20 }),
+    fillText: (label, x, y) => { if (label === '反转') drawn.push({ x, y }); },
     beginPath: () => {}, arc: () => {}, fill: () => {},
   };
   const target = {
     useMediaCoordinateSpace: callback => callback({ context: canvas, mediaSize: { width: 300, height: 300 } }),
   };
   context.markerSeriesHandler.renderer().draw(target, () => 220);
-
-  assert.equal(badgeCalls, 0);
-  assert.equal(captured.length, 5);
-  const first = captured[0].baseY;
-  assert.deepEqual(captured.map(item => item.baseY - first), [0, -16, -32, -16, 0]);
+  assert.equal(drawn.length, 5);
+  const first = drawn[0].y;
+  assert.deepEqual(drawn.map(item => item.y - first), [0, -16, -32, -16, 0]);
   assert.ok(!html.includes('function drawReversalBadge'));
 });

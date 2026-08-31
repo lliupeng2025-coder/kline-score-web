@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260831&marker=3"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260831&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -189,6 +189,23 @@ function drawArrow(ctx, x, y, s, dir, color){
   ctx.fill();
 }
 const reversalLabelOffset = index => [0, 16, 32, 16][index % 4];
+function assignReversalOffsets(source, limit, reversalTimes, byTime){
+  const end = Math.min(source.length - 1, limit);
+  let lastReversalIndex = -Infinity;
+  let groupIndex = 0;
+  for (let i = 0; i <= end; i++) {
+    const time = source[i].week_date;
+    if (!reversalTimes.has(time)) continue;
+    if (i - lastReversalIndex > 4) groupIndex = 0;
+    const payload = byTime[time];
+    if (payload) {
+      payload.reversal = true;
+      payload.reversalOffset = reversalLabelOffset(groupIndex);
+    }
+    groupIndex += 1;
+    lastReversalIndex = i;
+  }
+}
 function layoutMarkerLabels(items, options){
   const labelHeight = Math.max(1, Number(options && options.labelHeight) || 1);
   const laneCount = Math.max(1, Math.floor(Number(options && options.laneCount) || 1));
@@ -240,7 +257,6 @@ const markerSeriesHandler = {
         const spacing = markerState.barSpacing || 10;
         const s = Math.max(4, Math.min(8, spacing * 0.55));
         const arrowStep = s * 2 + 4;
-        let reversalLabelIndex = 0;
         const markerCandidates = visibleMarkerBars.flatMap(({ d, x }) => {
           const highY = priceConverter(d.high);
           const lowY = priceConverter(d.low);
@@ -248,7 +264,7 @@ const markerSeriesHandler = {
           const upCount = Math.max(0, Math.min(2, Number(d.up) || 0));
           if (!Number.isFinite(highY) || !Number.isFinite(lowY) || !d.markerKey) return [];
           const entries = [];
-          if (d.reversal) entries.push({ key: d.markerKey + ':reversal', label: '反转', labelWidth: ctx.measureText('反转').width + 6, x, baseY: highY - 14 - downCount * arrowStep - 20 - reversalLabelOffset(reversalLabelIndex++), laneDirection: -1, priority: 4 });
+          if (d.reversal) entries.push({ key: d.markerKey + ':reversal', label: '反转', labelWidth: ctx.measureText('反转').width, x, baseY: highY - 14 - downCount * arrowStep - 20 - (Number(d.reversalOffset) || 0), laneDirection: -1, priority: 4 });
           if (d.trend){
             const upTrend = d.trend.direction === 'up';
             const dotY = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
@@ -351,7 +367,8 @@ function drawMarkers(){
   const viewed = bars[idx];
   const payload = bars.map(markerPayloadForBar).filter(Boolean);
   const byTime = Object.fromEntries(payload.map(item => [item.time, item]));
-  reversalFlags(bars, idx).forEach(time => { if (byTime[time]) byTime[time].reversal = true; });
+  const reversalTimes = reversalFlags(bars, idx);
+  assignReversalOffsets(bars, idx, reversalTimes, byTime);
   if (viewed){
     (viewed.active_power_lines || []).forEach(line => {
       const p = byTime[line.time];

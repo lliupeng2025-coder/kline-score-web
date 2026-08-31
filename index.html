@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260831"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260831&marker=2"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -188,6 +188,15 @@ function drawArrow(ctx, x, y, s, dir, color){
   ctx.closePath();
   ctx.fill();
 }
+function drawReversalBadge(ctx, x, y){
+  ctx.fillStyle = '#f87171';
+  ctx.beginPath();
+  ctx.arc(x, y, 5.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#111827';
+  ctx.font = 'bold 8px Microsoft YaHei, sans-serif';
+  ctx.fillText('反', x, y + 0.4);
+}
 function layoutMarkerLabels(items, options){
   const labelHeight = Math.max(1, Number(options && options.labelHeight) || 1);
   const laneCount = Math.max(1, Math.floor(Number(options && options.laneCount) || 1));
@@ -299,8 +308,9 @@ const markerSeriesHandler = {
               ctx.fillText('起点', placement.labelX, placement.labelY);
             }
           }
-          // 反转标记：仅显示当前缩放下可避让的文字，不绘制圆点
+          // 反转标记：徽标始终显示；文字只在当前缩放下可避让时显示
           if (d.reversal){
+            drawReversalBadge(ctx, x, highY - 14 - downCount * arrowStep - 8);
             const placement = markerLabels.get(d.markerKey + ':reversal');
             if (!placement || !placement.showLabel) return;
             ctx.fillStyle = '#f87171';

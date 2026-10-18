@@ -55,6 +55,11 @@
   .period-toggle{display:flex;border:1px solid #3a3e48;border-radius:8px;overflow:hidden}
   .period-toggle button{background:#16181f;color:var(--muted);border:none;padding:8px 16px;font-size:13px;cursor:pointer;font-family:inherit}
   .period-toggle button.active{background:var(--gold);color:#000;font-weight:600}
+  .ind-toggle{display:flex;align-items:center;gap:6px}
+  .ind-toggle button{background:#16181f;color:var(--muted);border:1px solid #3a3e48;border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+  .ind-toggle button.active{background:var(--gold);color:#000;border-color:var(--gold);font-weight:600}
+  .ind-toggle input{width:52px;background:#16181f;color:var(--text);border:1px solid #3a3e48;border-radius:8px;padding:7px 8px;font-size:13px;font-family:inherit;outline:none;text-align:center}
+  .ind-toggle input:focus{border-color:var(--gold)}
 </style>
 </head>
 <body>
@@ -63,6 +68,11 @@
   <div class="period-toggle" id="periodToggle">
     <button data-period="w" class="active">周线</button>
     <button data-period="m">月线</button>
+  </div>
+  <div class="ind-toggle">
+    <button id="maToggle" type="button">MA</button>
+    <input id="maPeriodInput" type="text" value="20" title="均线周期，默认 20">
+    <button id="fibToggle" type="button">黄金分割</button>
   </div>
   <div class="selector">
     <label for="symbolSearch">加权连续合约</label>
@@ -182,6 +192,87 @@ const hasHistoricalSelection = () =>
 
 // —— 自定义标记层：力量箭头 + 趋势圈 + 起点徽标 + 反转文字 ——
 let markerState = null;
+
+// —— 指标开关：MA 均线（周期可改，默认 20）+ 黄金分割 38.2%/61.8% ——
+// 黄金分割移植自 beta2 fut_app.js：起点（当前查看K线的计算起点 calc_start）
+// → 当前查看K线区间的最高/最低点，画两条虚线；未点选K线时用最新K线
+const IND_CFG_KEY = 'kline_web_indicators_v1';
+let maOn = false, fibOn = false, maPeriod = 20, maLine = null, fibState = null;
+try {
+  const saved = JSON.parse(localStorage.getItem(IND_CFG_KEY) || '{}');
+  if (saved && typeof saved === 'object') {
+    maOn = !!saved.maOn; fibOn = !!saved.fibOn;
+    if (Number.isInteger(saved.maPeriod) && saved.maPeriod > 0) maPeriod = saved.maPeriod;
+  }
+} catch (e) {}
+function saveIndCfg(){
+  try { localStorage.setItem(IND_CFG_KEY, JSON.stringify({ maOn, fibOn, maPeriod })); } catch (e) {}
+}
+function maSeriesCalc(period){
+  const pts = [];
+  const win = [];
+  let sum = 0;
+  for (const b of bars){
+    const c = +b.c;
+    if (!Number.isFinite(c)) continue;
+    win.push(c); sum += c;
+    if (win.length > period) sum -= win.shift();
+    if (win.length === period) pts.push({ time: b.week_date, value: sum / period });
+  }
+  return pts;
+}
+function refreshMaLine(){
+  if (!maLine) return;
+  maLine.setData(maOn ? maSeriesCalc(maPeriod) : []);
+}
+function computeFib(){
+  if (!fibOn) return null;
+  const idx = currentBarIndex();
+  const viewed = bars[idx];
+  if (!viewed || !viewed.calc_start) return null;
+  const startIdx = bars.findIndex(b => b.week_date === viewed.calc_start);
+  if (startIdx < 0 || startIdx >= idx) return null;
+  let hi = -Infinity, lo = Infinity;
+  for (let i = startIdx; i <= idx; i++){
+    const h = +bars[i].h, l = +bars[i].l;
+    if (isFinite(h) && h > hi) hi = h;
+    if (isFinite(l) && l < lo) lo = l;
+  }
+  if (!isFinite(hi) || !isFinite(lo) || hi <= lo) return null;
+  return {
+    t0: bars[startIdx].week_date, hi, lo,
+    f382: hi - 0.382 * (hi - lo),
+    f618: hi - 0.618 * (hi - lo),
+  };
+}
+function drawFib(ctx, mediaSize, priceConverter){
+  const fib = fibState;
+  if (!fib) return;
+  const rawX0 = chart.timeScale().timeToCoordinate(fib.t0);
+  const x0 = Number.isFinite(rawX0) ? Math.max(0, rawX0) : 0;
+  const x1 = mediaSize.width - 4;
+  const levels = [
+    { price: fib.f382, label: '38.2%', color: '#ffd54f' },
+    { price: fib.f618, label: '61.8%', color: '#b56fd6' },
+  ];
+  levels.forEach(lv => {
+    const y = priceConverter(lv.price);
+    if (!Number.isFinite(y) || y < 0 || y > mediaSize.height) return;
+    ctx.strokeStyle = lv.color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = lv.color;
+    ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(lv.label + ' ' + fmt(lv.price, 2), x1 - 2, y - 6);
+    ctx.textAlign = 'center';
+  });
+}
 function drawArrow(ctx, x, y, s, dir, color){
   ctx.fillStyle = color;
   ctx.beginPath();
@@ -257,6 +348,8 @@ const markerSeriesHandler = {
         if (!markerState || !Array.isArray(markerState.bars)) return;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        // 黄金分割线先画（垫底层），力量/趋势标记在上层不被遮挡
+        drawFib(ctx, mediaSize, priceConverter);
         const markerBars = markerState.bars.map(bar => {
           const d = bar && bar.originalData;
           const rawX = chart.timeScale().timeToCoordinate(d && d.markerKey);
@@ -365,6 +458,7 @@ function initChart(){
   chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
   candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.28, bottom: 0.26 } });
   markerSeries = chart.addCustomSeries(markerSeriesHandler, {});
+  maLine = chart.addLineSeries({ color: '#ffd54f', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
   chart.subscribeClick(param => {
     if (!param.time) return;
     const idx = bars.findIndex(b => b.week_date === param.time);
@@ -376,6 +470,7 @@ function initChart(){
 function drawMarkers(){
   const idx = currentBarIndex();
   const viewed = bars[idx];
+  fibState = computeFib();  // 黄金分割随当前查看K线/开关重算
   const payload = bars.map(markerPayloadForBar).filter(Boolean);
   const byTime = Object.fromEntries(payload.map(item => [item.time, item]));
   const reversalTimes = reversalFlags(bars, idx);
@@ -512,6 +607,7 @@ async function loadBars(code){
     color: +b.c >= +b.o ? 'rgba(239,68,68,0.55)' : 'rgba(0,208,208,0.75)',
   })));
   volMaSeries.setData(bars.filter(b => b.vol_ma3 !== null).map(b => ({ time: b.week_date, value: +b.vol_ma3 })));
+  refreshMaLine();
   chart.timeScale().setVisibleLogicalRange({ from: bars.length - 104, to: bars.length + 2 });
   drawMarkers(); renderChips(); renderSnapshot();
   statusEl.textContent = code + ' · ' + bars.length + ' ' + PERIOD_LABEL[period] + ' · 更新至 ' + (bars[bars.length-1] || {}).week_date;
@@ -525,6 +621,33 @@ document.getElementById('periodToggle').addEventListener('click', ev => {
   document.querySelectorAll('#periodToggle button').forEach(b => b.classList.toggle('active', b === btn));
   if (selectEl.value) loadBars(selectEl.value);
 });
+
+// 指标开关：MA 均线（周期可改）与黄金分割；关闭=不显示，开启=显示，状态持久化
+const maToggleBtn = document.getElementById('maToggle');
+const fibToggleBtn = document.getElementById('fibToggle');
+const maPeriodInput = document.getElementById('maPeriodInput');
+function syncIndUi(){
+  maToggleBtn.classList.toggle('active', maOn);
+  fibToggleBtn.classList.toggle('active', fibOn);
+  maToggleBtn.textContent = 'MA' + maPeriod;
+  if (document.activeElement !== maPeriodInput) maPeriodInput.value = String(maPeriod);
+}
+maToggleBtn.addEventListener('click', () => {
+  maOn = !maOn; saveIndCfg(); syncIndUi(); refreshMaLine();
+});
+fibToggleBtn.addEventListener('click', () => {
+  fibOn = !fibOn; saveIndCfg(); syncIndUi();
+  drawMarkers();  // 内部会重算 fibState 并重画标记层
+});
+maPeriodInput.addEventListener('change', () => {
+  const p = parseInt(maPeriodInput.value.trim(), 10);
+  if (Number.isInteger(p) && p > 0 && p <= 500){
+    maPeriod = p; saveIndCfg(); syncIndUi(); refreshMaLine();
+  } else {
+    maPeriodInput.value = String(maPeriod);
+  }
+});
+syncIndUi();
 
 // 双击返回最新周
 document.getElementById('chart').addEventListener('dblclick', () => {

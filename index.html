@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20260831&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261018&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -52,11 +52,18 @@
   .arrow.none{color:var(--muted);background:rgba(138,143,154,.14)}
   .hint{color:var(--muted);font-size:12px}
   .up-text{color:var(--red)} .down-text{color:var(--green)}
+  .period-toggle{display:flex;border:1px solid #3a3e48;border-radius:8px;overflow:hidden}
+  .period-toggle button{background:#16181f;color:var(--muted);border:none;padding:8px 16px;font-size:13px;cursor:pointer;font-family:inherit}
+  .period-toggle button.active{background:var(--gold);color:#000;font-weight:600}
 </style>
 </head>
 <body>
 <header>
-  <h1>K线计分<small>文华加权周线 · 力量 / 趋势</small></h1>
+  <h1>K线计分<small>文华加权 周线 / 月线 · 力量 / 趋势</small></h1>
+  <div class="period-toggle" id="periodToggle">
+    <button data-period="w" class="active">周线</button>
+    <button data-period="m">月线</button>
+  </div>
   <div class="selector">
     <label for="symbolSearch">加权连续合约</label>
     <input id="symbolSearch" type="text" placeholder="搜索：代码 / 拼音 / 中文，如 PTA" autocomplete="off">
@@ -66,9 +73,9 @@
 </header>
 <div id="chips"></div>
 <div id="chart"></div>
-<div id="snapshot"><span class="hint">点击任意一根周K，查看该周收盘时的计分截面（不使用之后的K线）。默认显示最新一周。</span></div>
+<div id="snapshot"><span class="hint">点击任意一根K线，查看该周期收盘时的计分截面（不使用之后的K线）。默认显示最新一根。</span></div>
 <div id="alerts">
-  <h2>力量反转预警 <span id="alertsWeek" class="hint"></span></h2>
+  <h2>力量反转预警（周线） <span id="alertsWeek" class="hint"></span></h2>
   <div class="alert-cols">
     <div class="alert-col">
       <h3>方向反转 <span id="revCnt" class="hint"></span></h3>
@@ -117,8 +124,12 @@ const chipsEl = document.getElementById('chips');
 const snapshotEl = document.getElementById('snapshot');
 
 let chart, candleSeries, bollMid, bollTop, bollBottom, volSeries, volMaSeries, markerSeries;
-let bars = [];          // 当前品种全部周K（含计分快照）
-let selectedIdx = -1;   // 当前查看的周（-1 = 最新）
+let bars = [];          // 当前品种全部K线（含计分快照）
+let selectedIdx = -1;   // 当前查看的周期（-1 = 最新）
+let period = 'w';       // w=周线 m=月线
+const PERIOD_LABEL = { w: '周', m: '月' };
+const PERIOD_TABLE = { w: 'weekly_bars', m: 'monthly_bars' };
+const PERIOD_DATEKEY = { w: 'week_date', m: 'month_date' };
 
 const DIR_TEXT = {up:'向上', down:'向下', none:'无'};
 const TREND_LABEL = { O1: '趋势1', O2: '趋势2', O3: '趋势3' };
@@ -392,7 +403,7 @@ function renderChips(){
   const trends = bar.active_trend_lines || [];
   const latestTrend = trends[trends.length - 1];
   chipsEl.innerHTML =
-    `<span class="chip">最新周 <b>${escapeHtml(bar.week_date)}</b></span>` +
+    `<span class="chip">最新${PERIOD_LABEL[period]} <b>${escapeHtml(bar.week_date)}</b></span>` +
     `<span class="chip ${escapeHtml(dirClass(bar.power_direction))}">力量方向 <b>${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</b><span class="sub">总分 ${escapeHtml(bar.total_power_score ?? '—')}</span></span>` +
     `<span class="chip">有效力量K线 <b>${(bar.active_power_lines || []).length}</b> 条</span>` +
     `<span class="chip ${escapeHtml(dirClass(latestTrend && latestTrend.direction))}">趋势阶段 <b>${escapeHtml(latestTrend ? trendLabel(latestTrend.phase) : '—')}</b><span class="sub">破坏位 ${escapeHtml(latestTrend ? fmt(latestTrend.break_level, 0) : '—')}</span></span>`;
@@ -411,7 +422,7 @@ function renderSnapshot(){
   const prevBar = idx > 0 ? bars[idx - 1] : null;
   const barReversal = prevBar ? isReversal(prevBar.power_direction, bar.power_direction) : false;
   snapshotEl.innerHTML = `
-    <h2>周线计分截面 · ${escapeHtml(bar.week_date)}${hasHistoricalSelection() ? '（历史周，双击图表返回最新）' : '（最新）'}</h2>
+    <h2>${period === 'm' ? '月线' : '周线'}计分截面 · ${escapeHtml(bar.week_date)}${hasHistoricalSelection() ? '（历史周期，双击图表返回最新）' : '（最新）'}</h2>
     <div class="grid">
       <div><em>OHLC</em>${escapeHtml(fmt(bar.o,0))} / ${escapeHtml(fmt(bar.h,0))} / ${escapeHtml(fmt(bar.l,0))} / ${escapeHtml(fmt(bar.c,0))}</div>
       <div><em>VOL / MV(3,3)</em>${escapeHtml(fmtVol(bar.vol))} / ${escapeHtml(fmtVol(bar.vol_ma3))}</div>
@@ -475,7 +486,9 @@ async function loadSymbols(){
 async function loadBars(code){
   statusEl.textContent = '加载 ' + code + ' …';
   selectedIdx = -1;
-  try { bars = await dbSelectAll('weekly_bars', 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=week_date.asc'); }
+  const table = PERIOD_TABLE[period], dateKey = PERIOD_DATEKEY[period];
+  try { bars = (await dbSelectAll(table, 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=' + dateKey + '.asc'))
+    .map(r => ({ ...r, week_date: r[dateKey] })); }
   catch (e){
     bars = [];
     candleSeries.setData([]);
@@ -501,8 +514,17 @@ async function loadBars(code){
   volMaSeries.setData(bars.filter(b => b.vol_ma3 !== null).map(b => ({ time: b.week_date, value: +b.vol_ma3 })));
   chart.timeScale().setVisibleLogicalRange({ from: bars.length - 104, to: bars.length + 2 });
   drawMarkers(); renderChips(); renderSnapshot();
-  statusEl.textContent = code + ' · ' + bars.length + ' 周 · 更新至 ' + (bars[bars.length-1] || {}).week_date;
+  statusEl.textContent = code + ' · ' + bars.length + ' ' + PERIOD_LABEL[period] + ' · 更新至 ' + (bars[bars.length-1] || {}).week_date;
 }
+
+// 周期切换：周线 <-> 月线（月线图不显示力量反转预警，预警固定用周线口径）
+document.getElementById('periodToggle').addEventListener('click', ev => {
+  const btn = ev.target.closest('button[data-period]');
+  if (!btn || btn.dataset.period === period) return;
+  period = btn.dataset.period;
+  document.querySelectorAll('#periodToggle button').forEach(b => b.classList.toggle('active', b === btn));
+  if (selectEl.value) loadBars(selectEl.value);
+});
 
 // 双击返回最新周
 document.getElementById('chart').addEventListener('dblclick', () => {

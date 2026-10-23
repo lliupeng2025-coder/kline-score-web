@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261019&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261023&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -92,8 +92,8 @@
       <div id="revList"><span class="hint">加载中…</span></div>
     </div>
     <div class="alert-col">
-      <h3>分数跳变榜（|Δ|≥3）<span id="jmpCnt" class="hint"></span></h3>
-      <div id="jmpList"><span class="hint">加载中…</span></div>
+      <h3>月线方向（本周反转品种）<span id="monCnt" class="hint"></span></h3>
+      <div id="monList"><span class="hint">加载中…</span></div>
     </div>
   </div>
 </div>
@@ -659,7 +659,7 @@ document.getElementById('chart').addEventListener('dblclick', () => {
 // ===== 力量反转预警（全市场，各品种自身最近两周对比）=====
 async function loadAlerts(){
   const revList = document.getElementById('revList');
-  const jmpList = document.getElementById('jmpList');
+  const monList = document.getElementById('monList');
   try {
     const w1 = (await dbSelect('weekly_bars', 'select=week_date&order=week_date.desc&limit=1'))[0].week_date;
     // 个别品种周最后交易日不是周五（如胶合板 08-20），全局"第二周"会缺行；
@@ -680,26 +680,38 @@ async function loadAlerts(){
     const revs = Object.values(pairs).filter(p => isReversal(p.prev.power_direction, p.cur.power_direction))
       .map(p => p.cur)
       .sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
-    const jumps = Object.values(pairs).map(p => {
-      const b = p.cur, q = p.prev;
-      if (b.total_power_score === null || q.total_power_score === null) return null;
-      const d = b.total_power_score - q.total_power_score;
-      return Math.abs(d) >= 3 ? { ...b, from: q.total_power_score, delta: d } : null;
-    }).filter(Boolean).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    // 月线方向：本周反转品种各自取最新一根月线（最新完成月），照搬月线 power_direction
+    const monLatest = {};
+    if (revs.length) {
+      const inList = '(' + revs.map(b => '"' + b.symbol + '"').join(',') + ')';
+      const monRows = await dbSelectAll('monthly_bars',
+        'select=symbol,month_date,power_direction&symbol=in.' + encodeURIComponent(inList) + '&order=month_date.desc');
+      monRows.forEach(b => {
+        const cur = monLatest[b.symbol];
+        if (!cur || String(b.month_date) > String(cur.month_date)) monLatest[b.symbol] = b;
+      });
+    }
 
     document.getElementById('revCnt').textContent = '共 ' + revs.length;
-    document.getElementById('jmpCnt').textContent = '共 ' + jumps.length;
+    document.getElementById('monCnt').textContent = '共 ' + revs.length;
     revList.innerHTML = revs.length ? revs.map(b => {
       const dir = normDirection(b.power_direction);
       const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
       return `<div class="alert-row"><span class="arrow ${dir}">${arrow}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分 · ${escapeHtml(b.week_date)}</span></div>`;
     }).join('') : '<span class="hint">本周无方向反转品种</span>';
-    jmpList.innerHTML = jumps.length ? jumps.map(b =>
-      `<div class="alert-row"><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${escapeHtml(b.from)} → ${escapeHtml(b.total_power_score)}</span><span class="dt ${b.delta > 0 ? 'up' : 'down'}">${b.delta > 0 ? '+' : ''}${escapeHtml(b.delta)}</span></div>`
-    ).join('') : '<span class="hint">本周无显著跳变</span>';
+    monList.innerHTML = revs.length ? revs.map(b => {
+      const mon = monLatest[b.symbol];
+      const monDir = mon ? normDirection(mon.power_direction) : null;
+      const badge = monDir === 'up' ? '月↑' : monDir === 'down' ? '月↓' : '月—';
+      const cls = monDir || 'none';
+      const detail = mon
+        ? '月线' + DIR_TEXT[monDir] + ' · ' + escapeHtml(mon.month_date)
+        : '月线暂无数据';
+      return `<div class="alert-row"><span class="arrow ${cls}">${badge}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${detail}</span></div>`;
+    }).join('') : '<span class="hint">本周无方向反转品种</span>';
   } catch (e) {
     revList.innerHTML = '<span class="hint">预警加载失败: ' + escapeHtml(e.message) + '</span>';
-    jmpList.innerHTML = '';
+    monList.innerHTML = '';
   }
 }
 
@@ -707,13 +719,13 @@ async function loadAlerts(){
 if (!window.LightweightCharts) {
   statusEl.textContent = '图表库加载失败，请检查网络后刷新重试';
   document.getElementById('revList').innerHTML = '<span class="hint">图表库加载失败，页面无法渲染</span>';
-  document.getElementById('jmpList').innerHTML = '';
+  document.getElementById('monList').innerHTML = '';
 } else {
   try { initChart(); }
   catch (e) {
     statusEl.textContent = '图表初始化失败: ' + e.message;
     document.getElementById('revList').innerHTML = '<span class="hint">图表初始化失败: ' + escapeHtml(e.message) + '</span>';
-    document.getElementById('jmpList').innerHTML = '';
+    document.getElementById('monList').innerHTML = '';
   }
   if (window.LightweightCharts && chart) loadSymbols().then(() => loadAlerts());
 }

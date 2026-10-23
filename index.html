@@ -685,7 +685,7 @@ async function loadAlerts(){
     if (revs.length) {
       const inList = '(' + revs.map(b => '"' + b.symbol + '"').join(',') + ')';
       const monRows = await dbSelectAll('monthly_bars',
-        'select=symbol,month_date,power_direction&symbol=in.' + encodeURIComponent(inList) + '&order=month_date.desc');
+        'select=symbol,month_date,power_direction,total_power_score&symbol=in.' + encodeURIComponent(inList) + '&order=month_date.desc');
       monRows.forEach(b => {
         const cur = monLatest[b.symbol];
         if (!cur || String(b.month_date) > String(cur.month_date)) monLatest[b.symbol] = b;
@@ -705,7 +705,7 @@ async function loadAlerts(){
       const badge = monDir === 'up' ? '月↑' : monDir === 'down' ? '月↓' : '月—';
       const cls = monDir || 'none';
       const detail = mon
-        ? '月线' + DIR_TEXT[monDir] + ' · ' + escapeHtml(mon.month_date)
+        ? '现 ' + escapeHtml(mon.total_power_score ?? '—') + ' 分 · ' + escapeHtml(mon.month_date)
         : '月线暂无数据';
       return `<div class="alert-row"><span class="arrow ${cls}">${badge}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${detail}</span></div>`;
     }).join('') : '<span class="hint">本周无方向反转品种</span>';

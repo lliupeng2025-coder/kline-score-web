@@ -70,10 +70,20 @@ test('future weekly perturbation cannot alter historical preview, real fixtures 
   const latest=api.makeIncompleteMonth(months,weekly,code,context,'2026-10-25T04:00:00Z');assert.equal(latest.week_date,'2026-10-23');
  }
 });
-test('Fibonacci draws three levels from visible left endpoint',()=>{
+test('Fibonacci keeps price lines at actual prices and moves labels above chart',()=>{
  const source=html.slice(html.indexOf('function drawFib('),html.indexOf('function drawArrow('));
- const calls=[], ctx={setLineDash(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},fillText(...a){calls.push([this.textAlign,...a])}};
+ const lines=[], ctx={setLineDash(){},beginPath(){},moveTo(...a){lines.push(a)},lineTo(){},stroke(){},fillText(){throw Error('price label must be outside candle canvas')}};
  const env={fibState:{t0:'2026-01-01',f382:61.8,f500:50,f618:38.2},chart:{timeScale:()=>({timeToCoordinate:()=>30})},fmt:(v)=>v.toFixed(2)};
  vm.runInNewContext(source+'\ndrawFib(ctx,{width:800,height:300},x=>x)',{...env,ctx});
- assert.deepEqual(calls.map(x=>[x[0],x[1].split(' ')[0],x[2]]),[['left','38.2%',33],['left','50%',33],['left','61.8%',33]]);
+ assert.deepEqual(lines,[[30,61.8],[30,50],[30,38.2]]);
+ const legend={hidden:true,children:[],replaceChildren(){this.children=[]},append(x){this.children.push(x)}};
+ const document={getElementById:()=>legend,createElement:()=>({style:{}})};
+ const render=html.slice(html.indexOf('function renderFibLegend('),html.indexOf('function drawFib('));
+ const sandbox={...env,document};vm.createContext(sandbox);
+ vm.runInContext(render+'\nrenderFibLegend()',sandbox);
+ assert.equal(legend.hidden,false);
+ assert.deepEqual(legend.children.slice(1).map(x=>x.textContent),['38.2%  61.80','50%  50.00','61.8%  38.20']);
+ sandbox.fibState=null;vm.runInContext('renderFibLegend()',sandbox);
+ assert.equal(legend.hidden,true);assert.equal(legend.children.length,0);
+ assert.ok(html.indexOf('id="fibLegend"')<html.indexOf('id="chart"'));
 });

@@ -29,6 +29,9 @@
   .chip.up b{color:var(--red)} .chip.down b{color:var(--green)}
   .chip .sub{color:var(--muted);font-size:11px;margin-left:6px}
   #chart{flex:1;min-height:520px}
+  #fibLegend{display:flex;flex-wrap:wrap;align-items:center;gap:8px 22px;padding:8px 18px;background:var(--panel);border-bottom:1px solid var(--border);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+  #fibLegend[hidden]{display:none}
+  #fibLegend .fib-level{white-space:nowrap}
   #snapshot{border-top:1px solid var(--border);background:var(--panel);padding:12px 18px;font-size:13px;min-height:120px}
   #snapshot h2{font-size:14px;margin-bottom:8px;color:var(--gold)}
   #snapshot .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px 18px;margin-bottom:10px}
@@ -82,6 +85,7 @@
   <span id="status"></span>
 </header>
 <div id="chips"></div>
+<div id="fibLegend" hidden aria-label="黄金分割价位" aria-live="polite"></div>
 <div id="chart"></div>
 <div id="snapshot"><span class="hint">点击任意一根K线，查看该周期收盘时的计分截面（不使用之后的K线）。默认显示最新一根。</span></div>
 <div id="alerts">
@@ -253,6 +257,7 @@ function getMonthPreviewContext(){
 let barsLoadSerial = 0;
 function clearBarsDisplay(){
   bars=[]; selectedIdx=-1; fibState=null;
+  renderFibLegend();
   [candleSeries,bollMid,bollTop,bollBottom,volSeries,volMaSeries,markerSeries,maLine].forEach(s=>{if(s)s.setData([]);});
   chipsEl.innerHTML=''; snapshotEl.innerHTML='<span class="hint">加载中…</span>';
 }
@@ -371,6 +376,25 @@ function computeFib(){
     f618: hi - 0.618 * (hi - lo),
   };
 }
+function renderFibLegend(){
+  const legend = document.getElementById('fibLegend');
+  legend.replaceChildren();
+  legend.hidden = !fibState;
+  if (!fibState) return;
+  const title = document.createElement('span');
+  title.className = 'hint'; title.textContent = '黄金分割';
+  legend.append(title);
+  [
+    { price: fibState.f382, label: '38.2%', color: '#ffd54f' },
+    { price: fibState.f500, label: '50%', color: '#60a5fa' },
+    { price: fibState.f618, label: '61.8%', color: '#b56fd6' },
+  ].forEach(lv => {
+    const item = document.createElement('span');
+    item.className = 'fib-level'; item.style.color = lv.color;
+    item.textContent = lv.label + '  ' + fmt(lv.price, 2);
+    legend.append(item);
+  });
+}
 function drawFib(ctx, mediaSize, priceConverter){
   const fib = fibState;
   if (!fib) return;
@@ -394,11 +418,6 @@ function drawFib(ctx, mediaSize, priceConverter){
     ctx.lineTo(x1, y);
     ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = lv.color;
-    ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
-    ctx.textAlign = 'left';
-    if (x1 - x0 > 24) ctx.fillText(lv.label + ' ' + fmt(lv.price, 2), x0 + 3, Math.max(8, y - 6), x1 - x0 - 6);
-    ctx.textAlign = 'center';
   });
 }
 function drawArrow(ctx, x, y, s, dir, color){
@@ -599,6 +618,7 @@ function drawMarkers(){
   const idx = currentBarIndex();
   const viewed = bars[idx];
   fibState = computeFib();  // 黄金分割随当前查看K线/开关重算
+  renderFibLegend();  // 价位文字置于图表上方，独立于K线和标记
   const payload = bars.map(markerPayloadForBar).filter(Boolean);
   const byTime = Object.fromEntries(payload.map(item => [item.time, item]));
   const reversalTimes = reversalFlags(bars, idx);

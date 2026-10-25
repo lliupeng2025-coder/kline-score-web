@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261023&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261025&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -134,6 +134,129 @@ const chipsEl = document.getElementById('chips');
 const snapshotEl = document.getElementById('snapshot');
 
 let chart, candleSeries, bollMid, bollTop, bollBottom, volSeries, volMaSeries, markerSeries;
+// BEGIN MONTH_PREVIEW: display-only aggregate; never persisted as a scored month.
+function previewDateAdd(day, n){
+  const d = new Date(day + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function previewMonday(day){
+  const wd = new Date(day + 'T00:00:00Z').getUTCDay();
+  return previewDateAdd(day, -((wd + 6) % 7));
+}
+function previewTradingDays(start, end, holidays){
+  const days = [];
+  for (let day = start; day <= end; day = previewDateAdd(day, 1)){
+    const wd = new Date(day + 'T00:00:00Z').getUTCDay();
+    if (wd !== 0 && wd !== 6 && !holidays.has(day)) days.push(day);
+  }
+  return days;
+}
+function previewShanghaiTime(now){
+  const d = new Date(new Date(now).getTime() + 8 * 3600000);
+  if (!Number.isFinite(d.getTime())) throw new Error('当前时间无效');
+  return { day: d.toISOString().slice(0, 10), clock: d.toISOString().slice(11, 19) };
+}
+function previewWeekEnd(monday, holidays){
+  return previewTradingDays(monday, previewDateAdd(monday, 4), holidays).pop() || null;
+}
+function previewLatestClosedWeek(now, holidays){
+  const {day, clock} = previewShanghaiTime(now);
+  let monday = previewMonday(day);
+  for (let n = 0; n < 54; n++, monday = previewDateAdd(monday, -7)){
+    const end = previewWeekEnd(monday, holidays);
+    if (end && (end < day || (end === day && clock >= '15:30:00'))) return end;
+  }
+  return null;
+}
+function previewOHLC(row){
+  const vals = ['o','h','l','c','vol'].map(k => toFinitePrice(row[k]));
+  if (!vals.every(Number.isFinite) || vals[4] < 0 || vals[1] < Math.max(vals[0], vals[3]) ||
+      vals[2] > Math.min(vals[0], vals[3]) || vals[1] < vals[2]) throw new Error('合成源 OHLC/量无效');
+  return {o:vals[0],h:vals[1],l:vals[2],c:vals[3],vol:vals[4]};
+}
+function makeIncompleteMonth(closedMonths, weeks, code, context, now){
+  const {day, clock} = previewShanghaiTime(now), month = day.slice(0, 7), first = month + '-01';
+  if (!context || context.schema !== 'formal-month-preview/v1' || context.month !== month ||
+      !Array.isArray(context.holidays)) throw new Error('本月辅助数据尚未更新');
+  const holidays = new Set(context.holidays);
+  const nextMonth = new Date(first + 'T00:00:00Z'); nextMonth.setUTCMonth(nextMonth.getUTCMonth()+1);
+  const last = previewDateAdd(nextMonth.toISOString().slice(0, 10), -1);
+  const monthDays = previewTradingDays(first, last, holidays), monthEnd = monthDays[monthDays.length-1];
+  if (!monthEnd) throw new Error('本月交易日历为空');
+  if (day > monthEnd || (day === monthEnd && clock >= '15:30:00')) return null;
+  const cutoff = previewLatestClosedWeek(now, holidays);
+  if (!cutoff || cutoff < first) return null;
+  const previousMonth = previewDateAdd(first, -1).slice(0,7);
+  const base = closedMonths[closedMonths.length-1];
+  if (!base || base.week_date.slice(0,7) !== previousMonth) throw new Error('上一完整月数据尚未齐备');
+  const expected = [];
+  for (let mon = previewMonday(monthDays[0]); mon <= previewMonday(cutoff); mon = previewDateAdd(mon, 7)){
+    const end = previewWeekEnd(mon, holidays); if (end && end >= first && end <= cutoff) expected.push(end);
+  }
+  const byDate = new Map();
+  weeks.forEach(w => {
+    if (w.week_date < first || w.week_date > cutoff) return;
+    if (byDate.has(w.week_date)) throw new Error('周线日期重复');
+    byDate.set(w.week_date, w);
+  });
+  if (!expected.length || expected.some(d => !byDate.has(d))) throw new Error('本月已完成周线缺失，暂不合成');
+  if ([...byDate.keys()].some(d => !expected.includes(d))) throw new Error('周线日期与交易日历不一致');
+  const parts = expected.map(date => {
+    if (previewMonday(date) >= first) return previewOHLC(byDate.get(date));
+    const slice = (context.boundary_slices || {})[code];
+    const dates = previewTradingDays(first, date, holidays);
+    if (!slice || slice.start !== dates[0] || slice.end !== date ||
+        JSON.stringify(slice.dates) !== JSON.stringify(dates) || slice.price_source !== 'wenhua_day_exact'){
+      throw new Error('跨月周缺少完整文华日K，暂不合成');
+    }
+    return previewOHLC(slice);
+  });
+  const o = parts[0].o, h = Math.max(...parts.map(x=>x.h)), l = Math.min(...parts.map(x=>x.l));
+  const c = parts[parts.length-1].c, vol = parts.reduce((s,x)=>s+x.vol,0);
+  if (!Number.isFinite(vol)) throw new Error('合成量溢出');
+  const byMonthDate = new Map(closedMonths.map(b => [b.week_date,b]));
+  const broken = [], active = [];
+  (base.active_power_lines || []).forEach(line => {
+    const source = byMonthDate.get(line.time);
+    if (!source || !['up','down'].includes(line.direction) || !Number.isInteger(line.score) || line.score <= 0){
+      throw new Error('完整月力量线来源不完整');
+    }
+    const high = toFinitePrice(source.h), low = toFinitePrice(source.l);
+    if (![high,low].every(Number.isFinite)) throw new Error('完整月力量高低点无效');
+    const lost = line.direction === 'up' ? l <= low : h >= high;
+    (lost ? broken : active).push({...line});
+  });
+  const total = active.reduce((s,x)=>s+(x.direction==='up'?x.score:-x.score),0);
+  const latest = [...active].sort((a,b)=>a.time.localeCompare(b.time)).pop();
+  const direction = total > 0 ? 'up' : total < 0 ? 'down' : latest ? latest.direction : 'none';
+  return {...base, week_date:cutoff, month_date:cutoff, o,h,l,c,vol,
+    vol_ma3:null,boll_top:null,boll_mid:null,boll_bottom:null,
+    is_incomplete:true,preview_month:month,preview_start:monthDays[0],preview_end:cutoff,
+    preview_week_count:expected.length,preview_base_date:base.week_date,
+    preview_broken_lines:broken,active_power_lines:active,
+    active_trend_lines:(base.active_trend_lines||[]).map(x=>({...x})),
+    total_power_score:total,power_direction:direction,bar_power_score:null,power_reversal:false};
+}
+// END MONTH_PREVIEW
+
+let monthPreviewContextPromise = null;
+function getMonthPreviewContext(){
+  if (!monthPreviewContextPromise){
+    monthPreviewContextPromise = dbSelect('web_assets', 'select=content&name=eq.formal-month-preview-context.json')
+      .then(rows => {
+        if (rows.length !== 1 || typeof rows[0].content !== 'string') throw new Error('月线辅助数据不可用');
+        return JSON.parse(rows[0].content);
+      }).catch(error => { monthPreviewContextPromise = null; throw error; });
+  }
+  return monthPreviewContextPromise;
+}
+let barsLoadSerial = 0;
+function clearBarsDisplay(){
+  bars=[]; selectedIdx=-1; fibState=null;
+  [candleSeries,bollMid,bollTop,bollBottom,volSeries,volMaSeries,markerSeries,maLine].forEach(s=>{if(s)s.setData([]);});
+  chipsEl.innerHTML=''; snapshotEl.innerHTML='<span class="hint">加载中…</span>';
+}
+
 let bars = [];          // 当前品种全部K线（含计分快照）
 let selectedIdx = -1;   // 当前查看的周期（-1 = 最新）
 let period = 'w';       // w=周线 m=月线
@@ -158,7 +281,7 @@ function reversalFlags(source, limit) {
   const end = Math.min(source.length - 1, limit);
   for (let i = 1; i <= end; i++) {
     // 预热期纯行情行（月线最早月份，power_direction=null）不参与反转判定
-    if (source[i - 1].power_direction != null &&
+    if (!source[i].is_incomplete && source[i - 1].power_direction != null &&
         isReversal(source[i - 1].power_direction, source[i].power_direction)) {
       flags.add(source[i].week_date);
     }
@@ -195,9 +318,9 @@ const hasHistoricalSelection = () =>
 // —— 自定义标记层：力量箭头 + 趋势圈 + 起点徽标 + 反转文字 ——
 let markerState = null;
 
-// —— 指标开关：MA 均线（周期可改，默认 20）+ 黄金分割 38.2%/61.8% ——
+// —— 指标开关：MA 均线（周期可改，默认 20）+ 黄金分割 38.2%/50%/61.8% ——
 // 黄金分割移植自 beta2 fut_app.js：起点（当前查看K线的计算起点 calc_start）
-// → 当前查看K线区间的最高/最低点，画两条虚线；未点选K线时用最新K线
+// → 当前查看K线区间的最高/最低点，画三条虚线；未点选K线时用最新K线
 const IND_CFG_KEY = 'kline_web_indicators_v1';
 let maOn = false, fibOn = false, maPeriod = 20, maLine = null, fibState = null;
 try {
@@ -244,6 +367,7 @@ function computeFib(){
   return {
     t0: bars[startIdx].week_date, hi, lo,
     f382: hi - 0.382 * (hi - lo),
+    f500: hi - 0.5 * (hi - lo),
     f618: hi - 0.618 * (hi - lo),
   };
 }
@@ -253,8 +377,10 @@ function drawFib(ctx, mediaSize, priceConverter){
   const rawX0 = chart.timeScale().timeToCoordinate(fib.t0);
   const x0 = Number.isFinite(rawX0) ? Math.max(0, rawX0) : 0;
   const x1 = mediaSize.width - 4;
+  if (x0 >= x1) return;
   const levels = [
     { price: fib.f382, label: '38.2%', color: '#ffd54f' },
+    { price: fib.f500, label: '50%', color: '#60a5fa' },
     { price: fib.f618, label: '61.8%', color: '#b56fd6' },
   ];
   levels.forEach(lv => {
@@ -270,8 +396,8 @@ function drawFib(ctx, mediaSize, priceConverter){
     ctx.setLineDash([]);
     ctx.fillStyle = lv.color;
     ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(lv.label + ' ' + fmt(lv.price, 2), x1 - 2, y - 6);
+    ctx.textAlign = 'left';
+    if (x1 - x0 > 24) ctx.fillText(lv.label + ' ' + fmt(lv.price, 2), x0 + 3, Math.max(8, y - 6), x1 - x0 - 6);
     ctx.textAlign = 'center';
   });
 }
@@ -500,10 +626,10 @@ function renderChips(){
   const trends = bar.active_trend_lines || [];
   const latestTrend = trends[trends.length - 1];
   chipsEl.innerHTML =
-    `<span class="chip">最新${PERIOD_LABEL[period]} <b>${escapeHtml(bar.week_date)}</b></span>` +
-    `<span class="chip ${escapeHtml(dirClass(bar.power_direction))}">力量方向 <b>${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</b><span class="sub">总分 ${escapeHtml(bar.total_power_score ?? '—')}</span></span>` +
+    `<span class="chip">${bar.is_incomplete ? "未完成月K · 截至" : "最新"+PERIOD_LABEL[period]} <b>${escapeHtml(bar.week_date)}</b></span>` +
+    `<span class="chip ${escapeHtml(dirClass(bar.power_direction))}">${bar.is_incomplete ? "存量力量方向" : "力量方向"} <b>${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</b><span class="sub">总分 ${escapeHtml(bar.total_power_score ?? '—')}</span></span>` +
     `<span class="chip">有效力量K线 <b>${(bar.active_power_lines || []).length}</b> 条</span>` +
-    `<span class="chip ${escapeHtml(dirClass(latestTrend && latestTrend.direction))}">趋势阶段 <b>${escapeHtml(latestTrend ? trendLabel(latestTrend.phase) : '—')}</b><span class="sub">破坏位 ${escapeHtml(latestTrend ? fmt(latestTrend.break_level, 0) : '—')}</span></span>`;
+    `<span class="chip ${escapeHtml(dirClass(latestTrend && latestTrend.direction))}">${bar.is_incomplete ? "完整月趋势" : "趋势阶段"} <b>${escapeHtml(latestTrend ? trendLabel(latestTrend.phase) : '—')}</b><span class="sub">破坏位 ${escapeHtml(latestTrend ? fmt(latestTrend.break_level, 0) : '—')}</span></span>`;
 }
 
 function renderSnapshot(){
@@ -516,18 +642,20 @@ function renderSnapshot(){
   const trends = (bar.active_trend_lines || []).map(t =>
     `<span class="power-chip ${escapeHtml(dirClass(t.direction))}">${escapeHtml(trendLabel(t.phase))} · ${escapeHtml(DIR_TEXT[t.direction] || '')} · 起点 ${escapeHtml(t.time)} · 破坏位 ${escapeHtml(fmt(t.break_level, 0))}</span>`
   ).join('') || '<span class="hint">无</span>';
+  const preview = !!bar.is_incomplete;
   const prevBar = idx > 0 ? bars[idx - 1] : null;
-  const barReversal = prevBar ? isReversal(prevBar.power_direction, bar.power_direction) : false;
+  const barReversal = !preview && prevBar ? isReversal(prevBar.power_direction, bar.power_direction) : false;
   snapshotEl.innerHTML = `
-    <h2>${period === 'm' ? '月线' : '周线'}计分截面 · ${escapeHtml(bar.week_date)}${hasHistoricalSelection() ? '（历史周期，双击图表返回最新）' : '（最新）'}</h2>
+    <h2>${preview ? '未完成月K · 高低点破坏快照' : (period === 'm' ? '月线' : '周线')+'计分截面'} · ${escapeHtml(bar.week_date)}${hasHistoricalSelection() ? '（点选周期，双击图表返回最新）' : '（最新）'}</h2>
+    ${preview ? `<p class="hint">${escapeHtml(bar.preview_start)} 至 ${escapeHtml(bar.preview_end)}，合成 ${bar.preview_week_count} 根已完成周K。本根不计分，仅剔除高低点破坏的既有力量K（${bar.preview_broken_lines.length} 条）；存量总分和方向据剩余力量线汇总，不产生新反转。趋势、起点沿用 ${escapeHtml(bar.preview_base_date)} 完整月。</p>` : ''}
     <div class="grid">
       <div><em>OHLC</em>${escapeHtml(fmt(bar.o,0))} / ${escapeHtml(fmt(bar.h,0))} / ${escapeHtml(fmt(bar.l,0))} / ${escapeHtml(fmt(bar.c,0))}</div>
       <div><em>VOL / MV(3,3)</em>${escapeHtml(fmtVol(bar.vol))} / ${escapeHtml(fmtVol(bar.vol_ma3))}</div>
       <div><em>BOLL TOP / MID / BOTTOM</em>${escapeHtml(fmt(bar.boll_top,0))} / ${escapeHtml(fmt(bar.boll_mid,0))} / ${escapeHtml(fmt(bar.boll_bottom,0))}</div>
-      <div><em>力量总方向 / 总分 / 当前K分</em><span class="${escapeHtml(dirClass(bar.power_direction))}-text">${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</span> / ${escapeHtml(bar.total_power_score ?? '—')} / ${escapeHtml(bar.bar_power_score ?? '—')}</div>
-      <div><em>力量反转</em>${barReversal ? '是（' + escapeHtml(bar.week_date) + '）' : '否'}</div>
+      <div><em>${preview ? "存量方向 / 剩余总分 / 本根不计分" : "力量总方向 / 总分 / 当前K分"}</em><span class="${escapeHtml(dirClass(bar.power_direction))}-text">${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</span> / ${escapeHtml(bar.total_power_score ?? '—')} / ${escapeHtml(bar.bar_power_score ?? '—')}</div>
+      <div><em>力量反转</em>${preview ? "未完成月不判定" : barReversal ? '是（' + escapeHtml(bar.week_date) + '）' : '否'}</div>
       <div><em>计算起点</em>${escapeHtml(bar.calc_start || '—')}</div>
-      <div><em>趋势线</em>${trends}</div>
+      <div><em>${preview ? "趋势线（沿用完整月）" : "趋势线"}</em>${trends}</div>
     </div>
     <div><em class="hint">全部有效力量K线（红↑向上 / 绿↓向下）</em><br>${lines}</div>`;
 }
@@ -581,38 +709,52 @@ async function loadSymbols(){
 }
 
 async function loadBars(code){
+  const serial = ++barsLoadSerial, requestPeriod = period;
+  const table = PERIOD_TABLE[requestPeriod], dateKey = PERIOD_DATEKEY[requestPeriod];
+  const now = new Date();
+  clearBarsDisplay();
   statusEl.textContent = '加载 ' + code + ' …';
-  selectedIdx = -1;
-  const table = PERIOD_TABLE[period], dateKey = PERIOD_DATEKEY[period];
-  try { bars = (await dbSelectAll(table, 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=' + dateKey + '.asc'))
-    .map(r => ({ ...r, week_date: r[dateKey] })); }
-  catch (e){
-    bars = [];
-    candleSeries.setData([]);
-    bollMid.setData([]);
-    bollTop.setData([]);
-    bollBottom.setData([]);
-    volSeries.setData([]);
-    volMaSeries.setData([]);
-    markerSeries.setData([]);
-    chipsEl.innerHTML = '';
-    snapshotEl.innerHTML = '<span class="hint">K线加载失败: ' + escapeHtml(e.message) + '</span>';
-    statusEl.textContent = 'K线加载失败: ' + e.message;
+  let loaded, previewNote = '';
+  try {
+    loaded = (await dbSelectAll(table, 'select=*&symbol=eq.' + encodeURIComponent(code) + '&order=' + dateKey + '.asc'))
+      .map(r => ({...r, week_date:r[dateKey]}));
+    if (serial !== barsLoadSerial) return;
+    if (requestPeriod === 'm'){
+      try {
+        const context = await getMonthPreviewContext();
+        if (serial !== barsLoadSerial) return;
+        const sh = previewShanghaiTime(now), first = sh.day.slice(0,7)+'-01';
+        const cutoff = previewLatestClosedWeek(now, new Set(context.holidays || []));
+        const weeks = cutoff && cutoff >= first ? await dbSelectAll('weekly_bars',
+          'select=week_date,o,h,l,c,vol&symbol=eq.'+encodeURIComponent(code)+'&week_date=gte.'+first+'&week_date=lte.'+cutoff+'&order=week_date.asc') : [];
+        if (serial !== barsLoadSerial) return;
+        const preview = makeIncompleteMonth(loaded, weeks, code, context, now);
+        if (preview) loaded.push(preview);
+      } catch(e){ previewNote = ' · 未完成月K不可用：'+e.message; }
+    }
+  } catch(e){
+    if (serial !== barsLoadSerial) return;
+    clearBarsDisplay();
+    snapshotEl.innerHTML='<span class="hint">K线加载失败: '+escapeHtml(e.message)+'</span>';
+    statusEl.textContent='K线加载失败: '+e.message;
     return;
   }
-  candleSeries.setData(bars.map(b => ({ time: b.week_date, open: +b.o, high: +b.h, low: +b.l, close: +b.c })));
-  bollMid.setData(bars.filter(b => b.boll_mid !== null).map(b => ({ time: b.week_date, value: +b.boll_mid })));
-  bollTop.setData(bars.filter(b => b.boll_top !== null).map(b => ({ time: b.week_date, value: +b.boll_top })));
-  bollBottom.setData(bars.filter(b => b.boll_bottom !== null).map(b => ({ time: b.week_date, value: +b.boll_bottom })));
-  volSeries.setData(bars.map(b => ({
-    time: b.week_date, value: +b.vol,
-    color: +b.c >= +b.o ? 'rgba(239,68,68,0.55)' : 'rgba(0,208,208,0.75)',
-  })));
-  volMaSeries.setData(bars.filter(b => b.vol_ma3 !== null).map(b => ({ time: b.week_date, value: +b.vol_ma3 })));
+  if (serial !== barsLoadSerial) return;
+  bars = loaded;
+  candleSeries.setData(bars.map(b => ({time:b.week_date,open:+b.o,high:+b.h,low:+b.l,close:+b.c,
+    ...(b.is_incomplete ? {borderColor:'#e5c07b',wickColor:'#e5c07b'} : {})})));
+  bollMid.setData(bars.filter(b=>b.boll_mid!=null).map(b=>({time:b.week_date,value:+b.boll_mid})));
+  bollTop.setData(bars.filter(b=>b.boll_top!=null).map(b=>({time:b.week_date,value:+b.boll_top})));
+  bollBottom.setData(bars.filter(b=>b.boll_bottom!=null).map(b=>({time:b.week_date,value:+b.boll_bottom})));
+  volSeries.setData(bars.map(b=>({time:b.week_date,value:+b.vol,
+    color:+b.c>=+b.o?'rgba(239,68,68,0.55)':'rgba(0,208,208,0.75)'})));
+  volMaSeries.setData(bars.filter(b=>b.vol_ma3!=null).map(b=>({time:b.week_date,value:+b.vol_ma3})));
   refreshMaLine();
-  chart.timeScale().setVisibleLogicalRange({ from: bars.length - 104, to: bars.length + 2 });
-  drawMarkers(); renderChips(); renderSnapshot();
-  statusEl.textContent = code + ' · ' + bars.length + ' ' + PERIOD_LABEL[period] + ' · 更新至 ' + (bars[bars.length-1] || {}).week_date;
+  chart.timeScale().setVisibleLogicalRange({from:bars.length-104,to:bars.length+2});
+  drawMarkers();renderChips();renderSnapshot();
+  const latest=bars[bars.length-1], preview=latest&&latest.is_incomplete;
+  statusEl.textContent=code+' · '+(bars.length-(preview?1:0))+' '+PERIOD_LABEL[requestPeriod]+
+    (preview?' + 未完成月K（截至 '+latest.week_date+'）':' · 更新至 '+(latest?latest.week_date:'—'))+previewNote;
 }
 
 // 周期切换：周线 <-> 月线（月线图不显示力量反转预警，预警固定用周线口径）

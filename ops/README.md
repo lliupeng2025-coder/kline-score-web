@@ -1,0 +1,1 @@
+构建器在正式工作空间根目录D:/ywl运行；此目录保留源码副本。换机时先把build_month_preview_context.py恢复到工作空间根目录，并恢复str配置/日历及handover映射，按docs/incomplete-month-preview.md核验路径和依赖。真实写入配置不提交。

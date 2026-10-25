@@ -39,6 +39,7 @@ test('real layout renders a dense low-middle-high-middle-low mountain without ba
       })),
       barSpacing: 10,
     },
+    drawFib: () => {},
     drawArrow: () => {},
     trendLabel: () => '趋势1',
   };

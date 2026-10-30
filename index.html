@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261025&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261030&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -42,7 +42,8 @@
   #alerts{border-top:1px solid var(--border);background:var(--panel);padding:12px 18px;font-size:13px}
   #alerts h2{font-size:14px;margin-bottom:8px;color:var(--gold)}
   #alerts h3{font-size:12px;margin:0 0 6px;color:var(--muted);font-weight:600}
-  #alerts .alert-cols{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px}
+  #alerts .alert-cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 24px}
+  @media (max-width:1180px){#alerts .alert-cols{grid-template-columns:1fr 1fr}}
   @media (max-width:760px){#alerts .alert-cols{grid-template-columns:1fr}}
   .alert-row{display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:6px;padding:4px 9px;margin:0 0 4px;font-size:12px;background:#12141a}
   .alert-row .nm{font-weight:600}
@@ -89,15 +90,19 @@
 <div id="chart"></div>
 <div id="snapshot"><span class="hint">点击任意一根K线，查看该周期收盘时的计分截面（不使用之后的K线）。默认显示最新一根。</span></div>
 <div id="alerts">
-  <h2>力量反转预警（周线） <span id="alertsWeek" class="hint"></span></h2>
+  <h2>力量反转预警 <span id="alertsWeek" class="hint"></span></h2>
   <div class="alert-cols">
     <div class="alert-col">
-      <h3>方向反转 <span id="revCnt" class="hint"></span></h3>
+      <h3>方向反转（周线）<span id="revCnt" class="hint"></span></h3>
       <div id="revList"><span class="hint">加载中…</span></div>
     </div>
     <div class="alert-col">
       <h3>月线方向（本周反转品种）<span id="monCnt" class="hint"></span></h3>
       <div id="monList"><span class="hint">加载中…</span></div>
+    </div>
+    <div class="alert-col">
+      <h3>月反转（对比上一月）<span id="monRevCnt" class="hint"></span></h3>
+      <div id="monRevList"><span class="hint">加载中…</span></div>
     </div>
   </div>
 </div>
@@ -822,6 +827,7 @@ document.getElementById('chart').addEventListener('dblclick', () => {
 async function loadAlerts(){
   const revList = document.getElementById('revList');
   const monList = document.getElementById('monList');
+  const monRevList = document.getElementById('monRevList');
   try {
     const w1 = (await dbSelect('weekly_bars', 'select=week_date&order=week_date.desc&limit=1'))[0].week_date;
     // 个别品种周最后交易日不是周五（如胶合板 08-20），全局"第二周"会缺行；
@@ -836,7 +842,7 @@ async function loadAlerts(){
       if (list.length >= 2 && list[0].week_date >= w1min) pairs[sym] = { cur: list[0], prev: list[1] };
     });
     const nameOf = {}; allSymbols.forEach(s => { nameOf[s.code] = s.short_name + ' · ' + s.cn_name; });
-    document.getElementById('alertsWeek').textContent = '本周 ' + w1 + ' · 对比各品种上一周';
+    document.getElementById('alertsWeek').textContent = '本周 ' + w1 + ' · 左列周线对比上一周 · 右两列按完整月口径';
 
     // 反转新规则：本周方向与上一周方向不一致即算反转（含与"无"的相互切换），前端直接比较两周方向
     const revs = Object.values(pairs).filter(p => isReversal(p.prev.power_direction, p.cur.power_direction))
@@ -854,8 +860,23 @@ async function loadAlerts(){
       });
     }
 
+    // 月反转：全市场按品种比较「最新月」与「上一月」的方向（含与"无"的互转；预热期 null 不参与）
+    const m1 = (await dbSelect('monthly_bars', 'select=month_date&order=month_date.desc&limit=1'))[0].month_date;
+    const mSince = new Date(Date.parse(m1 + 'T00:00:00') - 80 * 864e5).toISOString().slice(0, 10);
+    const m1min = new Date(Date.parse(m1 + 'T00:00:00') - 45 * 864e5).toISOString().slice(0, 10);
+    const mRows = await dbSelectAll('monthly_bars',
+      'select=symbol,month_date,total_power_score,power_direction&month_date=gte.' + encodeURIComponent(mSince) + '&order=month_date.desc');
+    const mBy = {};
+    mRows.forEach(b => { (mBy[b.symbol] = mBy[b.symbol] || []).push(b); });
+    const mRevs = Object.values(mBy)
+      .filter(list => list.length >= 2 && list[0].month_date >= m1min && list[1].power_direction != null
+        && isReversal(list[1].power_direction, list[0].power_direction))
+      .map(list => list[0])
+      .sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
+
     document.getElementById('revCnt').textContent = '共 ' + revs.length;
     document.getElementById('monCnt').textContent = '共 ' + revs.length;
+    document.getElementById('monRevCnt').textContent = '共 ' + mRevs.length + ' · 最新月 ' + m1;
     revList.innerHTML = revs.length ? revs.map(b => {
       const dir = normDirection(b.power_direction);
       const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
@@ -871,9 +892,15 @@ async function loadAlerts(){
         : '月线暂无数据';
       return `<div class="alert-row"><span class="arrow ${cls}">${badge}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${detail}</span></div>`;
     }).join('') : '<span class="hint">本周无方向反转品种</span>';
+    monRevList.innerHTML = mRevs.length ? mRevs.map(b => {
+      const dir = normDirection(b.power_direction);
+      const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
+      return `<div class="alert-row"><span class="arrow ${dir}">${arrow}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分 · ${escapeHtml(b.month_date)}</span></div>`;
+    }).join('') : '<span class="hint">最新月无方向反转品种</span>';
   } catch (e) {
     revList.innerHTML = '<span class="hint">预警加载失败: ' + escapeHtml(e.message) + '</span>';
     monList.innerHTML = '';
+    monRevList.innerHTML = '';
   }
 }
 
@@ -882,12 +909,14 @@ if (!window.LightweightCharts) {
   statusEl.textContent = '图表库加载失败，请检查网络后刷新重试';
   document.getElementById('revList').innerHTML = '<span class="hint">图表库加载失败，页面无法渲染</span>';
   document.getElementById('monList').innerHTML = '';
+  document.getElementById('monRevList').innerHTML = '';
 } else {
   try { initChart(); }
   catch (e) {
     statusEl.textContent = '图表初始化失败: ' + e.message;
     document.getElementById('revList').innerHTML = '<span class="hint">图表初始化失败: ' + escapeHtml(e.message) + '</span>';
     document.getElementById('monList').innerHTML = '';
+  document.getElementById('monRevList').innerHTML = '';
   }
   if (window.LightweightCharts && chart) loadSymbols().then(() => loadAlerts());
 }

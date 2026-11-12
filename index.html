@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261112&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261112r2&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -548,7 +548,7 @@ const markerSeriesHandler = {
             const dotY = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
             const label = trendLabel(d.trend.phase);
             ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
-            entries.push({ key: d.markerKey + ':trend', label, labelWidth: ctx.measureText(label).width + 6 + (d.trend.broken ? ctx.measureText(' ✕').width : 0), x, baseY: upTrend ? dotY + 13 : dotY - 13, laneDirection: upTrend ? 1 : -1, priority: 2 });
+            entries.push({ key: d.markerKey + ':trend', label, labelWidth: ctx.measureText(label).width + 6, x, baseY: upTrend ? dotY + 13 : dotY - 13, laneDirection: upTrend ? 1 : -1, priority: 2 });
           }
           if (d.badge) entries.push({ key: d.markerKey + ':badge', label: '起点', labelWidth: ctx.measureText('起点').width + 6, x, baseY: highY - 14 - downCount * arrowStep - (d.reversal ? 24 : 0) - 49, laneDirection: -1, priority: 3 });
           return entries;
@@ -564,7 +564,7 @@ const markerSeriesHandler = {
           // 力量箭头：向上=红色叠放在K线下方，向下=绿色叠放在K线上方，分数=箭头个数
           for (let k = 0; k < upCount; k++) drawArrow(ctx, x, lowY + 14 + k * arrowStep, s, 'up', '#ef4444');
           for (let k = 0; k < downCount; k++) drawArrow(ctx, x, highY - 14 - k * arrowStep, s, 'down', '#22c55e');
-          // 趋势阶段金色圆点和"趋势1/趋势2/趋势3"（被破坏的加红色 ✕）
+          // 趋势阶段金色圆点和"趋势1/趋势2/趋势3"（被破坏的保留文字+红色删除线）
           if (d.trend){
             const upTrend = d.trend.direction === 'up';
             const y = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
@@ -574,20 +574,16 @@ const markerSeriesHandler = {
             if (placement && placement.showLabel){
               ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
               const label = trendLabel(d.trend.phase);
+              ctx.fillStyle = '#e5c07b';
+              ctx.fillText(label, placement.labelX, placement.labelY);
               if (d.trend.broken){
-                const suffix = ' ✕';
-                const labelW = ctx.measureText(label).width;
-                const suffixW = ctx.measureText(suffix).width;
-                const startX = placement.labelX - (labelW + suffixW) / 2;
-                ctx.textAlign = 'left';
-                ctx.fillStyle = '#e5c07b';
-                ctx.fillText(label, startX, placement.labelY);
-                ctx.fillStyle = '#f87171';
-                ctx.fillText(suffix, startX + labelW, placement.labelY);
-                ctx.textAlign = 'center';
-              } else {
-                ctx.fillStyle = '#e5c07b';
-                ctx.fillText(label, placement.labelX, placement.labelY);
+                const w = ctx.measureText(label).width;
+                ctx.strokeStyle = '#f87171';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(placement.labelX - w / 2 - 2, placement.labelY);
+                ctx.lineTo(placement.labelX + w / 2 + 2, placement.labelY);
+                ctx.stroke();
               }
             }
           }

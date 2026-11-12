@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261112r3&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261112r4&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -726,9 +726,9 @@ function renderSnapshot(){
       <div><em>${preview ? "存量方向 / 剩余总分 / 本根不计分" : "力量总方向 / 总分 / 当前K分"}</em><span class="${escapeHtml(dirClass(bar.power_direction))}-text">${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</span> / ${escapeHtml(bar.total_power_score ?? '—')} / ${escapeHtml(bar.bar_power_score ?? '—')}</div>
       <div><em>力量反转</em>${preview ? "未完成月不判定" : barReversal ? '是（' + escapeHtml(bar.week_date) + '）' : '否'}</div>
       <div><em>计算起点</em>${escapeHtml(bar.calc_start || '—')}</div>
-      <div><em>${preview ? "趋势线（沿用完整月）" : "趋势线"}</em>${trends}</div>
     </div>
-    <div><em class="hint">全部有效力量K线（红↑向上 / 绿↓向下）</em><br>${lines}</div>`;
+    <div><em class="hint">全部有效力量K线（红↑向上 / 绿↓向下）</em><br>${lines}</div>
+    <div><em class="hint">${preview ? "趋势线（沿用完整月）" : "趋势线"}（趋势1/2/3 · 方向 · 起点 · 破坏位）</em><br>${trends}</div>`;
 }
 
 let allSymbols = [];

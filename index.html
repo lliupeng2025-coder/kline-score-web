@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261030&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261112&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -258,6 +258,28 @@ function getMonthPreviewContext(){
       }).catch(error => { monthPreviewContextPromise = null; throw error; });
   }
   return monthPreviewContextPromise;
+}
+
+// —— 趋势历史（2026-11-12）：每品种每周期一份 web_assets 资产 ——
+// trend_history_{w|m}_<code>.json → [{time,direction,phase,break_level,status,sealed_time,broken_time}]
+// status：active=当前段存活未封存；sealed=完整循环（趋势1/2/3 走完且无反转衔接新趋势1）永久保留；
+// broken=被后续K线价格破坏；ended=未封存且被反转终止。broken/ended 统一打叉，sealed 永不打叉。
+// 资产缺失时回退到旧的 active_trend_lines 当前段显示。
+let trendHistory = [];
+const trendHistoryCache = {};
+async function loadTrendHistory(code, requestPeriod){
+  const key = requestPeriod + ':' + code;
+  if (key in trendHistoryCache) return trendHistoryCache[key];
+  let hist = null;
+  try {
+    const rows = await dbSelect('web_assets', 'select=content&name=eq.trend_history_' + requestPeriod + '_' + encodeURIComponent(code) + '.json');
+    if (rows.length === 1 && typeof rows[0].content === 'string'){
+      const parsed = JSON.parse(rows[0].content);
+      if (parsed && Array.isArray(parsed.trend_history)) hist = parsed.trend_history;
+    }
+  } catch (e) { hist = null; }
+  trendHistoryCache[key] = hist;
+  return hist;
 }
 let barsLoadSerial = 0;
 function clearBarsDisplay(){
@@ -525,7 +547,8 @@ const markerSeriesHandler = {
             const upTrend = d.trend.direction === 'up';
             const dotY = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
             const label = trendLabel(d.trend.phase);
-            entries.push({ key: d.markerKey + ':trend', label, labelWidth: ctx.measureText(label).width + 6, x, baseY: upTrend ? dotY + 13 : dotY - 13, laneDirection: upTrend ? 1 : -1, priority: 2 });
+            ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
+            entries.push({ key: d.markerKey + ':trend', label, labelWidth: ctx.measureText(label).width + 6 + (d.trend.broken ? ctx.measureText(' ✕').width : 0), x, baseY: upTrend ? dotY + 13 : dotY - 13, laneDirection: upTrend ? 1 : -1, priority: 2 });
           }
           if (d.badge) entries.push({ key: d.markerKey + ':badge', label: '起点', labelWidth: ctx.measureText('起点').width + 6, x, baseY: highY - 14 - downCount * arrowStep - (d.reversal ? 24 : 0) - 49, laneDirection: -1, priority: 3 });
           return entries;
@@ -541,7 +564,7 @@ const markerSeriesHandler = {
           // 力量箭头：向上=红色叠放在K线下方，向下=绿色叠放在K线上方，分数=箭头个数
           for (let k = 0; k < upCount; k++) drawArrow(ctx, x, lowY + 14 + k * arrowStep, s, 'up', '#ef4444');
           for (let k = 0; k < downCount; k++) drawArrow(ctx, x, highY - 14 - k * arrowStep, s, 'down', '#22c55e');
-          // 趋势阶段金色圆点和"趋势1/趋势2/趋势3"
+          // 趋势阶段金色圆点和"趋势1/趋势2/趋势3"（被破坏的加红色 ✕）
           if (d.trend){
             const upTrend = d.trend.direction === 'up';
             const y = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
@@ -549,9 +572,23 @@ const markerSeriesHandler = {
             ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill();
             const placement = markerLabels.get(d.markerKey + ':trend');
             if (placement && placement.showLabel){
-              ctx.fillStyle = '#e5c07b';
               ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
-              ctx.fillText(trendLabel(d.trend.phase), placement.labelX, placement.labelY);
+              const label = trendLabel(d.trend.phase);
+              if (d.trend.broken){
+                const suffix = ' ✕';
+                const labelW = ctx.measureText(label).width;
+                const suffixW = ctx.measureText(suffix).width;
+                const startX = placement.labelX - (labelW + suffixW) / 2;
+                ctx.textAlign = 'left';
+                ctx.fillStyle = '#e5c07b';
+                ctx.fillText(label, startX, placement.labelY);
+                ctx.fillStyle = '#f87171';
+                ctx.fillText(suffix, startX + labelW, placement.labelY);
+                ctx.textAlign = 'center';
+              } else {
+                ctx.fillStyle = '#e5c07b';
+                ctx.fillText(label, placement.labelX, placement.labelY);
+              }
             }
           }
           // 计算起点：蓝色圆形 + 白色右箭头 + "起点"字样
@@ -636,10 +673,23 @@ function drawMarkers(){
       if (line.direction === 'up') p.up = Math.max(p.up, count);
       if (line.direction === 'down') p.down = Math.max(p.down, count);
     });
-    (viewed.active_trend_lines || []).forEach(line => {
-      const p = byTime[line.time];
-      if (p) p.trend = { phase: line.phase, direction: line.direction };
-    });
+    if (trendHistory.length){
+      // 趋势历史口径：逐线按查看时点判定——时间晚于查看K的不显示；
+      // broken_time（价格破坏或反转终止）早于查看时点的打叉；封存的永久保留。
+      const viewedDate = viewed.week_date;
+      trendHistory.forEach(h => {
+        if (!h || !h.time || h.time > viewedDate) return;
+        const p = byTime[h.time];
+        if (!p) return;
+        const crossed = !!(h.broken_time && h.broken_time <= viewedDate);
+        p.trend = { phase: h.phase, direction: h.direction, broken: crossed };
+      });
+    } else {
+      (viewed.active_trend_lines || []).forEach(line => {
+        const p = byTime[line.time];
+        if (p) p.trend = { phase: line.phase, direction: line.direction };
+      });
+    }
     if (viewed.calc_start && byTime[viewed.calc_start]) byTime[viewed.calc_start].badge = true;
   }
   markerSeries.setData(payload);
@@ -766,6 +816,8 @@ async function loadBars(code){
   }
   if (serial !== barsLoadSerial) return;
   bars = loaded;
+  trendHistory = (await loadTrendHistory(code, requestPeriod)) || [];
+  if (serial !== barsLoadSerial) return;
   candleSeries.setData(bars.map(b => ({time:b.week_date,open:+b.o,high:+b.h,low:+b.l,close:+b.c,
     ...(b.is_incomplete ? {borderColor:'#e5c07b',wickColor:'#e5c07b'} : {})})));
   bollMid.setData(bars.filter(b=>b.boll_mid!=null).map(b=>({time:b.week_date,value:+b.boll_mid})));

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261112r2&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261112r3&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -542,15 +542,15 @@ const markerSeriesHandler = {
           const upCount = Math.max(0, Math.min(2, Number(d.up) || 0));
           if (!Number.isFinite(highY) || !Number.isFinite(lowY) || !d.markerKey) return [];
           const entries = [];
-          if (d.reversal) entries.push({ key: d.markerKey + ':reversal', label: '反转', labelWidth: ctx.measureText('反转').width, x, baseY: highY - 14 - downCount * arrowStep - 20 - (Number(d.reversalOffset) || 0), laneDirection: -1, priority: 4 });
+          if (d.reversal){ ctx.font = 'bold 10px Microsoft YaHei, sans-serif'; entries.push({ key: d.markerKey + ':reversal', label: '反转', labelWidth: ctx.measureText('反转').width, x, baseY: highY - 14 - downCount * arrowStep - 20 - (Number(d.reversalOffset) || 0), laneDirection: -1, priority: 4 }); }
           if (d.trend){
             const upTrend = d.trend.direction === 'up';
             const dotY = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
             const label = trendLabel(d.trend.phase);
-            ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
-            entries.push({ key: d.markerKey + ':trend', label, labelWidth: ctx.measureText(label).width + 6, x, baseY: upTrend ? dotY + 13 : dotY - 13, laneDirection: upTrend ? 1 : -1, priority: 2 });
+            ctx.font = '9px Microsoft YaHei, sans-serif';
+            entries.push({ key: d.markerKey + ':trend', label, labelWidth: ctx.measureText(label).width + 5, x, baseY: upTrend ? dotY + 12 : dotY - 12, laneDirection: upTrend ? 1 : -1, priority: 2 });
           }
-          if (d.badge) entries.push({ key: d.markerKey + ':badge', label: '起点', labelWidth: ctx.measureText('起点').width + 6, x, baseY: highY - 14 - downCount * arrowStep - (d.reversal ? 24 : 0) - 49, laneDirection: -1, priority: 3 });
+          if (d.badge){ ctx.font = '10px Microsoft YaHei, sans-serif'; entries.push({ key: d.markerKey + ':badge', label: '起点', labelWidth: ctx.measureText('起点').width + 6, x, baseY: highY - 14 - downCount * arrowStep - (d.reversal ? 24 : 0) - 49, laneDirection: -1, priority: 3 }); }
           return entries;
         });
         const markerLabels = new Map(layoutMarkerLabels(markerCandidates, {
@@ -564,22 +564,22 @@ const markerSeriesHandler = {
           // 力量箭头：向上=红色叠放在K线下方，向下=绿色叠放在K线上方，分数=箭头个数
           for (let k = 0; k < upCount; k++) drawArrow(ctx, x, lowY + 14 + k * arrowStep, s, 'up', '#ef4444');
           for (let k = 0; k < downCount; k++) drawArrow(ctx, x, highY - 14 - k * arrowStep, s, 'down', '#22c55e');
-          // 趋势阶段金色圆点和"趋势1/趋势2/趋势3"（被破坏的保留文字+红色删除线）
+          // 趋势阶段金色圆点和"趋势1/趋势2/趋势3"（9px 小字；被破坏的保留文字+红色删除线）
           if (d.trend){
             const upTrend = d.trend.direction === 'up';
             const y = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
             ctx.fillStyle = '#e5c07b';
-            ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
             const placement = markerLabels.get(d.markerKey + ':trend');
             if (placement && placement.showLabel){
-              ctx.font = 'bold 11px Microsoft YaHei, sans-serif';
+              ctx.font = '9px Microsoft YaHei, sans-serif';
               const label = trendLabel(d.trend.phase);
               ctx.fillStyle = '#e5c07b';
               ctx.fillText(label, placement.labelX, placement.labelY);
               if (d.trend.broken){
                 const w = ctx.measureText(label).width;
                 ctx.strokeStyle = '#f87171';
-                ctx.lineWidth = 1.5;
+                ctx.lineWidth = 1;
                 ctx.beginPath();
                 ctx.moveTo(placement.labelX - w / 2 - 2, placement.labelY);
                 ctx.lineTo(placement.labelX + w / 2 + 2, placement.labelY);

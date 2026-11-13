@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261113r3&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261113r4&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -668,7 +668,7 @@ function drawMarkers(){
       const viewedDate = viewed.week_date;
       trendHistory.forEach(h => {
         if (!h || !h.time || h.time > viewedDate) return;
-        if (h.status === 'broken' || h.status === 'cleared') return;
+        if (h.status === 'broken' || h.status === 'cleared' || h.status === 'stale') return;
         const p = byTime[h.time];
         if (!p) return;
         p.trend = { phase: h.phase, direction: h.direction };

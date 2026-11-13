@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261112r4&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261113r3&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -262,8 +262,8 @@ function getMonthPreviewContext(){
 
 // —— 趋势历史（2026-11-12）：每品种每周期一份 web_assets 资产 ——
 // trend_history_{w|m}_<code>.json → [{time,direction,phase,break_level,status,sealed_time,broken_time}]
-// status：active=当前段存活未封存；sealed=完整循环（趋势1/2/3 走完且无反转衔接新趋势1）永久保留；
-// broken=被后续K线价格破坏；ended=未封存且被反转终止。broken/ended 统一打叉，sealed 永不打叉。
+// status：active=存活未锁死；sealed=趋势3出现即锁死完整循环，永久保留；
+// broken=被后续K线价格破坏。2026-11-13 起：broken 不在图中显示；编号跨反转延续同方向上根趋势线。
 // 资产缺失时回退到旧的 active_trend_lines 当前段显示。
 let trendHistory = [];
 const trendHistoryCache = {};
@@ -298,8 +298,10 @@ const PERIOD_DATEKEY = { w: 'week_date', m: 'month_date' };
 
 const DIR_TEXT = {up:'向上', down:'向下', none:'无'};
 const TREND_LABEL = { O1: '趋势1', O2: '趋势2', O3: '趋势3' };
+// 2026-11-13：标签保持 趋势1/2/3 文字，颜色随方向——向上红色、向下绿色
 const trendLabel = phase =>
   Object.prototype.hasOwnProperty.call(TREND_LABEL, phase) ? TREND_LABEL[phase] : '—';
+const trendColor = direction => direction === 'up' ? '#ef4444' : direction === 'down' ? '#22c55e' : '#e5c07b';
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])
 );
@@ -564,27 +566,18 @@ const markerSeriesHandler = {
           // 力量箭头：向上=红色叠放在K线下方，向下=绿色叠放在K线上方，分数=箭头个数
           for (let k = 0; k < upCount; k++) drawArrow(ctx, x, lowY + 14 + k * arrowStep, s, 'up', '#ef4444');
           for (let k = 0; k < downCount; k++) drawArrow(ctx, x, highY - 14 - k * arrowStep, s, 'down', '#22c55e');
-          // 趋势阶段金色圆点和"趋势1/趋势2/趋势3"（9px 小字；被破坏的保留文字+红色删除线）
+          // 趋势阶段圆点和"趋势1/趋势2/趋势3"（9px 小字，向上红色/向下绿色；被破坏的线不进入标记数据）
           if (d.trend){
             const upTrend = d.trend.direction === 'up';
             const y = upTrend ? lowY + 14 + upCount * arrowStep + 12 : highY - 14 - downCount * arrowStep - 12;
-            ctx.fillStyle = '#e5c07b';
+            const tColor = trendColor(d.trend.direction);
+            ctx.fillStyle = tColor;
             ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
             const placement = markerLabels.get(d.markerKey + ':trend');
             if (placement && placement.showLabel){
               ctx.font = '9px Microsoft YaHei, sans-serif';
-              const label = trendLabel(d.trend.phase);
-              ctx.fillStyle = '#e5c07b';
-              ctx.fillText(label, placement.labelX, placement.labelY);
-              if (d.trend.broken){
-                const w = ctx.measureText(label).width;
-                ctx.strokeStyle = '#f87171';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(placement.labelX - w / 2 - 2, placement.labelY);
-                ctx.lineTo(placement.labelX + w / 2 + 2, placement.labelY);
-                ctx.stroke();
-              }
+              ctx.fillStyle = tColor;
+              ctx.fillText(trendLabel(d.trend.phase), placement.labelX, placement.labelY);
             }
           }
           // 计算起点：蓝色圆形 + 白色右箭头 + "起点"字样
@@ -670,15 +663,15 @@ function drawMarkers(){
       if (line.direction === 'down') p.down = Math.max(p.down, count);
     });
     if (trendHistory.length){
-      // 趋势历史口径：逐线按查看时点判定——时间晚于查看K的不显示；
-      // broken_time（价格破坏或反转终止）早于查看时点的打叉；封存的永久保留。
+      // 趋势历史口径（2026-11-13 定稿）：向上/向下同时判断、编号独立；
+      // 时间晚于查看K的不显示；被破坏（broken/cleared）的永不显示；锁死与存活的正常显示。
       const viewedDate = viewed.week_date;
       trendHistory.forEach(h => {
         if (!h || !h.time || h.time > viewedDate) return;
+        if (h.status === 'broken' || h.status === 'cleared') return;
         const p = byTime[h.time];
         if (!p) return;
-        const crossed = !!(h.broken_time && h.broken_time <= viewedDate);
-        p.trend = { phase: h.phase, direction: h.direction, broken: crossed };
+        p.trend = { phase: h.phase, direction: h.direction };
       });
     } else {
       (viewed.active_trend_lines || []).forEach(line => {

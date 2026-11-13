@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261113r4&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261113r5&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -664,11 +664,14 @@ function drawMarkers(){
     });
     if (trendHistory.length){
       // 趋势历史口径（2026-11-13 定稿）：向上/向下同时判断、编号独立；
-      // 时间晚于查看K的不显示；被破坏（broken/cleared）的永不显示；锁死与存活的正常显示。
+      // 时间晚于查看K的不显示；点选历史K线=当时视角——被破坏的线在破坏发生前
+      // 的时点正常显示，查看时点 ≥ 破坏时点才不显示；cleared 同理（先破后清）；
+      // stale（循环未完成且滑出计算窗口）只在最后存活观测周内显示；锁死与存活正常显示。
       const viewedDate = viewed.week_date;
       trendHistory.forEach(h => {
         if (!h || !h.time || h.time > viewedDate) return;
-        if (h.status === 'broken' || h.status === 'cleared' || h.status === 'stale') return;
+        if ((h.status === 'broken' || h.status === 'cleared') && h.broken_time && h.broken_time <= viewedDate) return;
+        if (h.status === 'stale' && h.active_until && h.active_until < viewedDate) return;
         const p = byTime[h.time];
         if (!p) return;
         p.trend = { phase: h.phase, direction: h.direction };

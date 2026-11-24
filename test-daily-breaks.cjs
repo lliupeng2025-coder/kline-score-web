@@ -17,7 +17,7 @@ function setup(rows){
   allSymbols:[{code:'srJQ00.ZF',short_name:'SR',cn_name:'白糖'}],
   normDirection:value=>['up','down'].includes(value)?value:'none',
   escapeHtml:value=>String(value??''),
-  monthBreakSummary:()=> '2026-11-24 周K破坏：2025-12-31 向上2分力量线（最低 5039 ≤ 破坏位 5083）',
+  monthBreakSummary:(bar,label)=> '2026-11-24 '+label+'K破坏：2025-12-31 向上2分力量线（最低 5039 ≤ 破坏位 5083）',
  };
  vm.createContext(sandbox);vm.runInContext(source,sandbox);
  return {sandbox,elements};
@@ -34,6 +34,7 @@ test('daily panel renders only this week events with timeframe and break evidenc
  assert.match(elements.dailyBreakCnt.textContent,/1 品种缺源未判定/);
  assert.match(elements.dailyBreakList.innerHTML,/SR · 白糖/);assert.match(elements.dailyBreakList.innerHTML,/2026-11-24 · 周力量/);
  assert.match(elements.dailyBreakList.innerHTML,/2025-12-31 向上2分力量线/);
+ assert.match(elements.dailyBreakList.innerHTML,/2026-11-24 日K破坏/);
  assert.equal((elements.dailyBreakList.innerHTML.match(/month-rev-row/g)||[]).length,1);
 });
 test('last-trading-day clear hides all entries and explains next-week restart',async()=>{

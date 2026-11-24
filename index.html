@@ -740,7 +740,7 @@ function renderChips(){
     `<span class="chip ${escapeHtml(dirClass(latestTrend && latestTrend.direction))}">${bar.is_incomplete ? "完整月趋势" : "趋势阶段"} <b>${escapeHtml(latestTrend ? trendLabel(latestTrend.phase) : '—')}</b><span class="sub">破坏位 ${escapeHtml(latestTrend ? fmt(latestTrend.break_level, 0) : '—')}</span></span>`;
 }
 
-function monthBreakSummary(bar){
+function monthBreakSummary(bar, periodLabel = '周'){
   const groups = new Map();
   (bar.preview_broken_lines || []).forEach(line => {
     const date = line.broken_time || bar.preview_end;
@@ -752,7 +752,7 @@ function monthBreakSummary(bar){
     if (!groups.has(date)) groups.set(date,[]);
     groups.get(date).push(text);
   });
-  return [...groups.entries()].map(([date,lines]) => date + ' 周K破坏：' + lines.join('；')).join('；');
+  return [...groups.entries()].map(([date,lines]) => date + ' ' + periodLabel + 'K破坏：' + lines.join('；')).join('；');
 }
 function renderSnapshot(){
   const idx = currentBarIndex();
@@ -1107,7 +1107,7 @@ async function loadDailyBreaks(){
       const dir = normDirection(b.direction);
       const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
       const timeframe = b.timeframe === 'week' ? '周力量' : '月力量';
-      const breaks = monthBreakSummary({preview_broken_lines:b.broken_lines,preview_end:b.date});
+      const breaks = monthBreakSummary({preview_broken_lines:b.broken_lines,preview_end:b.date},'日');
       return `<div class="alert-row month-rev-row"><span class="arrow ${dir}">${arrow}</span><span class="tf">${escapeHtml(b.date)} · ${timeframe}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分</span>${breaks ? `<span class="brk">${escapeHtml(breaks)}</span>` : ''}</div>`;
     }).join('') : '<span class="hint">本周暂无日线破坏反转待确认品种</span>';
   } catch (e) {

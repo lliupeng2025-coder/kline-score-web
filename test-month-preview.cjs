@@ -16,6 +16,20 @@ const base = [{week_date:'2026-07-31',o:90,h:120,l:80,c:100,vol:1},
 const weeks = [{week_date:'2026-10-09',o:110,h:125,l:99,c:115,vol:10},
  {week_date:'2026-10-16',o:115,h:129,l:95,c:100,vol:20},
  {week_date:'2026-10-23',o:100,h:130,l:90,c:95,vol:30}];
+
+function sugarFixture(){
+ const months = JSON.parse(fs.readFileSync(path.join(__dirname,'../outputs/web_snapshot_monthly/bars_SRJQ00.ZF.json'),'utf8')).bars;
+ const weekly = JSON.parse(fs.readFileSync(path.join(__dirname,'../outputs/web_snapshot/bars_srJQ00.ZF.json'),'utf8')).bars;
+ const baseMonth = months[months.length-1], byDate = new Map(months.map(x=>[x.month_date,x]));
+ const needed = new Set(baseMonth.active_power_lines.map(x=>x.time));
+ const closedMonths = months.filter(x=>needed.has(x.month_date)||x===baseMonth)
+   .map(x=>({...x,week_date:x.month_date}));
+ const november = weekly.filter(x=>x.week_date>='2026-11-01'&&x.week_date<='2026-11-20');
+ const ctx = {schema:'formal-month-preview/v1',month:'2026-11',holidays:[],boundary_slices:{}};
+ const preview = api.makeIncompleteMonth(closedMonths,november,'srJQ00.ZF',ctx,'2026-11-24T09:00:00Z');
+ return {months,weekly,baseMonth,closedMonths,november,ctx,preview,byDate};
+}
+
 test('the two user examples use only completed weeks and sum OHLCV',()=>{
  const a=api.makeIncompleteMonth(base,weeks,'TEST',context,'2026-10-15T07:00:00Z');
  assert.deepEqual([a.preview_start,a.week_date,a.o,a.h,a.l,a.c,a.vol,a.preview_week_count],['2026-10-08','2026-10-09',110,125,99,115,10,1]);
@@ -24,12 +38,21 @@ test('the two user examples use only completed weeks and sum OHLCV',()=>{
  assert.equal(api.previewLatestClosedWeek('2026-10-23T07:29:59Z',new Set(context.holidays)),'2026-10-16');
  assert.equal(api.previewLatestClosedWeek('2026-10-23T07:30:00Z',new Set(context.holidays)),'2026-10-23');
 });
-test('preview only breaks existing powers at equality; no new score/reversal/trend',()=>{
+test('preview breaks existing powers at equality and updates weekly month reversal',()=>{
  const before=JSON.stringify(base), w=clone(weeks); w[2].l=80;
  const p=api.makeIncompleteMonth(base,w,'TEST',context,'2026-10-24T04:00:00Z');
  assert.equal(p.active_power_lines.length,0);assert.equal(p.preview_broken_lines.length,3);
- assert.equal(p.total_power_score,0);assert.equal(p.power_direction,'none');assert.equal(p.bar_power_score,null);assert.equal(p.power_reversal,false);
+ assert.equal(p.total_power_score,0);assert.equal(p.power_direction,'none');assert.equal(p.bar_power_score,null);assert.equal(p.power_reversal,true);
+ assert.equal(p.preview_reversal_time,'2026-10-23');
  assert.equal(JSON.stringify(p.active_trend_lines),JSON.stringify(base[2].active_trend_lines));assert.equal(JSON.stringify(base),before);
+});
+test('each broken power records its first breaking weekly bar, not a later extreme',()=>{
+ const w=clone(weeks); w[1].h=130; w[2].h=999; w[2].l=80;
+ const p=api.makeIncompleteMonth(base,w,'TEST',context,'2026-10-24T04:00:00Z');
+ const down=p.preview_broken_lines.find(x=>x.time==='2026-08-31');
+ const up=p.preview_broken_lines.find(x=>x.time==='2026-07-31');
+ assert.equal(down.broken_time,'2026-10-16');assert.equal(down.breaker_high,130);assert.equal(down.break_level,130);
+ assert.equal(up.broken_time,'2026-10-23');assert.equal(up.breaker_low,80);assert.equal(up.break_level,80);
 });
 test('zero signed remaining sum uses latest surviving direction',()=>{
  const b=clone(base);b[2].active_power_lines=[{time:'2026-07-31',direction:'up',score:1},{time:'2026-08-31',direction:'down',score:1}];
@@ -57,9 +80,43 @@ test('boundary week uses exact daily slice, rejects unavailable or future/mismat
  const p=api.makeIncompleteMonth(b,w,'T',ctx,'2026-12-05T04:00:00Z');assert.deepEqual([p.o,p.h,p.l,p.c,p.vol],[100,110,90,101,40]);
  ctx.boundary_slices.T.end='2026-12-11';assert.throws(()=>api.makeIncompleteMonth(b,w,'T',ctx,'2026-12-05T04:00:00Z'),/跨月周/);
 });
-test('future weekly perturbation cannot alter historical preview, real fixtures preserve original months',()=>{
+test('sugar 2026-11-20 reverses down and names both broken monthly power lines',()=>{
+ const {preview}=sugarFixture();
+ assert.equal(preview.power_direction,'down');assert.equal(preview.total_power_score,-2);
+ assert.equal(preview.power_reversal,true);assert.equal(preview.preview_reversal_time,'2026-11-20');
+ assert.equal(preview.active_power_lines.length,2);assert.equal(preview.preview_broken_lines.length,2);
+ const actual=JSON.parse(JSON.stringify(preview.preview_broken_lines.map(x=>[x.time,x.direction,x.score,x.break_level,x.broken_time,x.breaker_low])));
+ assert.deepEqual(actual,[['2025-12-31','up',2,5083,'2026-11-20',5039],['2026-08-31','up',1,5108,'2026-11-20',5039]]);
+});
+test('market loader returns the sugar reversal and break evidence',async()=>{
+ const {baseMonth,closedMonths,november,ctx}=sugarFixture();
+ const helper=html.slice(html.indexOf('async function loadWeeklyMonthReversals('),html.indexOf('async function loadAlerts('));
+ const sandbox={toFinitePrice,getMonthPreviewContext:async()=>ctx,dbSelectAll:async table=>{
+   if(table==='weekly_bars')return november.map(x=>({...x,symbol:'srJQ00.ZF'}));
+   const needed=new Set(baseMonth.active_power_lines.map(x=>x.time));
+   return closedMonths.filter(x=>needed.has(x.month_date)).map(({week_date,...x})=>({...x,symbol:'srJQ00.ZF'}));
+ }};
+ vm.createContext(sandbox);vm.runInContext(logic+'\n'+helper,sandbox);
+ const baseWithSymbol={...baseMonth,symbol:'srJQ00.ZF'};
+ const result=await sandbox.loadWeeklyMonthReversals({'srJQ00.ZF':[baseWithSymbol]},['srJQ00.ZF'],'2026-11-24T09:00:00Z','2026-11-20');
+ assert.equal(result.cutoff,'2026-11-20');assert.equal(result.rows.length,1,JSON.stringify(result));
+ assert.equal(result.rows[0].symbol,'srJQ00.ZF');
+ assert.equal(result.rows[0].power_direction,'down');assert.equal(result.rows[0].preview_broken_lines.length,2);
+ const duringUpdate=await sandbox.loadWeeklyMonthReversals({'srJQ00.ZF':[baseWithSymbol]},['srJQ00.ZF'],'2026-11-27T08:00:00Z','2026-11-20');
+ assert.equal(duringUpdate.cutoff,'2026-11-20');assert.equal(duringUpdate.rows.length,1,JSON.stringify(duringUpdate));
+ assert.equal(duringUpdate.skipped,0);
+});
+test('break summary names the source power, breaker week and threshold',()=>{
+ const {preview}=sugarFixture();
+ const source=html.slice(html.indexOf('function monthBreakSummary('),html.indexOf('function renderSnapshot('));
+ const sandbox={DIR_TEXT:{up:'向上',down:'向下',none:'无'},fmt:(v,d=2)=>Number(v).toFixed(d),preview};
+ vm.runInNewContext(source+'\nthis.summary=monthBreakSummary(preview)',sandbox);
+ const text=sandbox.summary;
+ assert.match(text,/2026-11-20 周K破坏/);assert.match(text,/2025-12-31 向上2分力量线/);
+ assert.match(text,/2026-08-31 向上1分力量线/);assert.match(text,/最低 5039 ≤ 破坏位 5083/);assert.match(text,/最低 5039 ≤ 破坏位 5108/);
+});
+test('future weekly perturbation cannot alter historical preview, real fixtures preserve original months',{skip:!process.env.MONTH_PREVIEW_FIXTURES},()=>{
  const fixtures=process.env.MONTH_PREVIEW_FIXTURES;
- if(!fixtures)throw Error('set MONTH_PREVIEW_FIXTURES to captured read-only API fixtures');
  for(const code of ['rbJQ00.SF','auJQ00.SF']){
   const months=JSON.parse(fs.readFileSync(path.join(fixtures,code+'_monthly.json'))).map(x=>({...x,week_date:x.month_date}));
   const weekly=JSON.parse(fs.readFileSync(path.join(fixtures,code+'_weekly.json'))),before=JSON.stringify(months);

@@ -17,9 +17,20 @@ const weeks = [{week_date:'2026-10-09',o:110,h:125,l:99,c:115,vol:10},
  {week_date:'2026-10-16',o:115,h:129,l:95,c:100,vol:20},
  {week_date:'2026-10-23',o:100,h:130,l:90,c:95,vol:30}];
 
+function findWorkspace(){
+ let dir=__dirname;
+ for(let n=0;n<8;n++,dir=path.dirname(dir)){
+  if(fs.existsSync(path.join(dir,'outputs/web_snapshot_monthly/bars_SRJQ00.ZF.json')) &&
+     fs.existsSync(path.join(dir,'outputs/web_snapshot/bars_srJQ00.ZF.json'))) return dir;
+ }
+ return null;
+}
+const workspace=process.env.KLINE_WORKSPACE || findWorkspace();
+const sugarFixturesAvailable=!!workspace;
 function sugarFixture(){
- const months = JSON.parse(fs.readFileSync(path.join(__dirname,'../outputs/web_snapshot_monthly/bars_SRJQ00.ZF.json'),'utf8')).bars;
- const weekly = JSON.parse(fs.readFileSync(path.join(__dirname,'../outputs/web_snapshot/bars_srJQ00.ZF.json'),'utf8')).bars;
+ if(!workspace)throw Error('production sugar fixtures unavailable; set KLINE_WORKSPACE');
+ const months = JSON.parse(fs.readFileSync(path.join(workspace,'outputs/web_snapshot_monthly/bars_SRJQ00.ZF.json'),'utf8')).bars;
+ const weekly = JSON.parse(fs.readFileSync(path.join(workspace,'outputs/web_snapshot/bars_srJQ00.ZF.json'),'utf8')).bars;
  const baseMonth = months[months.length-1], byDate = new Map(months.map(x=>[x.month_date,x]));
  const needed = new Set(baseMonth.active_power_lines.map(x=>x.time));
  const closedMonths = months.filter(x=>needed.has(x.month_date)||x===baseMonth)
@@ -80,7 +91,7 @@ test('boundary week uses exact daily slice, rejects unavailable or future/mismat
  const p=api.makeIncompleteMonth(b,w,'T',ctx,'2026-12-05T04:00:00Z');assert.deepEqual([p.o,p.h,p.l,p.c,p.vol],[100,110,90,101,40]);
  ctx.boundary_slices.T.end='2026-12-11';assert.throws(()=>api.makeIncompleteMonth(b,w,'T',ctx,'2026-12-05T04:00:00Z'),/跨月周/);
 });
-test('sugar 2026-11-20 reverses down and names both broken monthly power lines',()=>{
+test('sugar 2026-11-20 reverses down and names both broken monthly power lines',{skip:!sugarFixturesAvailable},()=>{
  const {preview}=sugarFixture();
  assert.equal(preview.power_direction,'down');assert.equal(preview.total_power_score,-2);
  assert.equal(preview.power_reversal,true);assert.equal(preview.preview_reversal_time,'2026-11-20');
@@ -88,7 +99,7 @@ test('sugar 2026-11-20 reverses down and names both broken monthly power lines',
  const actual=JSON.parse(JSON.stringify(preview.preview_broken_lines.map(x=>[x.time,x.direction,x.score,x.break_level,x.broken_time,x.breaker_low])));
  assert.deepEqual(actual,[['2025-12-31','up',2,5083,'2026-11-20',5039],['2026-08-31','up',1,5108,'2026-11-20',5039]]);
 });
-test('market loader returns the sugar reversal and break evidence',async()=>{
+test('market loader returns the sugar reversal and break evidence',{skip:!sugarFixturesAvailable},async()=>{
  const {baseMonth,closedMonths,november,ctx}=sugarFixture();
  const helper=html.slice(html.indexOf('async function loadWeeklyMonthReversals('),html.indexOf('async function loadAlerts('));
  const sandbox={toFinitePrice,getMonthPreviewContext:async()=>ctx,dbSelectAll:async table=>{
@@ -106,7 +117,7 @@ test('market loader returns the sugar reversal and break evidence',async()=>{
  assert.equal(duringUpdate.cutoff,'2026-11-20');assert.equal(duringUpdate.rows.length,1,JSON.stringify(duringUpdate));
  assert.equal(duringUpdate.skipped,0);
 });
-test('break summary names the source power, breaker week and threshold',()=>{
+test('break summary names the source power, breaker week and threshold',{skip:!sugarFixturesAvailable},()=>{
  const {preview}=sugarFixture();
  const source=html.slice(html.indexOf('function monthBreakSummary('),html.indexOf('function renderSnapshot('));
  const sandbox={DIR_TEXT:{up:'向上',down:'向下',none:'无'},fmt:(v,d=2)=>Number(v).toFixed(d),preview};

@@ -52,6 +52,11 @@
   .month-rev-row .brk{flex-basis:100%;color:var(--muted);font-size:11px;line-height:1.55;padding-left:2px}
   .month-pending{margin-top:2em}
   .month-pending .pending-note{margin:0 0 6px;line-height:1.5}
+  .daily-break-panel{margin-top:24px;border-top:1px solid var(--border);padding-top:12px}
+  .daily-break-note{margin:0 0 8px}
+  #dailyBreakList{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px}
+  #dailyBreakList .tf{font-weight:700;white-space:nowrap}
+  @media (max-width:760px){#dailyBreakList{grid-template-columns:1fr}}
   .alert-row .dt{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
   .alert-row .dt.up{color:var(--red)} .alert-row .dt.down{color:var(--green)}
   .arrow{font-weight:700;border-radius:5px;padding:1px 6px;font-size:11px}
@@ -113,6 +118,11 @@
         <div id="monPendingList"><span class="hint">加载中…</span></div>
       </div>
     </div>
+  </div>
+  <div id="dailyBreakPanel" class="daily-break-panel">
+    <h3>日线破坏反转待确认（本周）<span id="dailyBreakCnt" class="hint"></span></h3>
+    <p id="dailyBreakNote" class="hint daily-break-note">只记录本周日K破坏周/月力量线造成的方向变化；最后交易日完整周月更新后清零，下周首个交易日15:30重新记录。</p>
+    <div id="dailyBreakList"><span class="hint">加载中…</span></div>
   </div>
 </div>
 
@@ -1060,6 +1070,52 @@ async function loadAlerts(){
   }
 }
 
+async function loadDailyBreaks(){
+  const list = document.getElementById('dailyBreakList');
+  const count = document.getElementById('dailyBreakCnt');
+  const note = document.getElementById('dailyBreakNote');
+  try {
+    const rows = await dbSelect('web_assets','select=content&name=eq.formal-daily-breaks.json');
+    if (!rows.length){
+      count.textContent = '共 0 · 等待本周首个交易日15:30更新';
+      list.innerHTML = '<span class="hint">本周暂无日线破坏记录</span>';
+      return;
+    }
+    if (rows.length !== 1 || typeof rows[0].content !== 'string') throw new Error('日线破坏资产不可用');
+    const data = JSON.parse(rows[0].content);
+    if (!data || data.schema !== 'formal-daily-breaks/v1') throw new Error('日线破坏资产版本不兼容');
+    const currentWeek = previewMonday(previewShanghaiTime(new Date()).day);
+    if (data.week_start !== currentWeek){
+      count.textContent = '共 0 · 等待本周首个交易日15:30更新';
+      list.innerHTML = '<span class="hint">上周内容已停止展示，本周暂无日线破坏记录</span>';
+      return;
+    }
+    const nameOf = {}; allSymbols.forEach(s => { nameOf[s.code] = s.short_name + ' · ' + s.cn_name; });
+    const skipped = data.coverage && Array.isArray(data.coverage.skipped) ? data.coverage.skipped.length : 0;
+    if (data.cleared){
+      count.textContent = '已清零 · ' + data.as_of;
+      note.textContent = '本周完整周K/月K力量更新已完成，日线破坏栏已清零；下周首个交易日15:30后重新记录。';
+      list.innerHTML = '<span class="hint">本周日线破坏记录已清零</span>';
+      return;
+    }
+    const entries = (Array.isArray(data.entries) ? data.entries : []).filter(b =>
+      b && b.date >= data.week_start && b.date <= data.week_end && Array.isArray(b.broken_lines));
+    entries.sort((a,b) => b.date.localeCompare(a.date) || (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh') || a.timeframe.localeCompare(b.timeframe));
+    count.textContent = '共 ' + entries.length + ' · 截至 ' + data.as_of + (skipped ? ' · ' + skipped + ' 品种缺源未判定' : '');
+    note.textContent = '只记录本周日K破坏周/月力量线造成的方向变化；最后交易日完整周月更新后清零，下周首个交易日15:30重新记录。';
+    list.innerHTML = entries.length ? entries.map(b => {
+      const dir = normDirection(b.direction);
+      const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
+      const timeframe = b.timeframe === 'week' ? '周力量' : '月力量';
+      const breaks = monthBreakSummary({preview_broken_lines:b.broken_lines,preview_end:b.date});
+      return `<div class="alert-row month-rev-row"><span class="arrow ${dir}">${arrow}</span><span class="tf">${escapeHtml(b.date)} · ${timeframe}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分</span>${breaks ? `<span class="brk">${escapeHtml(breaks)}</span>` : ''}</div>`;
+    }).join('') : '<span class="hint">本周暂无日线破坏反转待确认品种</span>';
+  } catch (e) {
+    count.textContent = '加载失败';
+    list.innerHTML = '<span class="hint">日线破坏栏加载失败：' + escapeHtml(e.message) + '</span>';
+  }
+}
+
 // 启动保护：图表库加载失败时给出可见错误，避免页面无声卡在"加载中…"
 if (!window.LightweightCharts) {
   statusEl.textContent = '图表库加载失败，请检查网络后刷新重试';
@@ -1074,7 +1130,7 @@ if (!window.LightweightCharts) {
     document.getElementById('monList').innerHTML = '';
   document.getElementById('monRevList').innerHTML = '';
   }
-  if (window.LightweightCharts && chart) loadSymbols().then(() => loadAlerts());
+  if (window.LightweightCharts && chart) loadSymbols().then(() => { loadAlerts(); loadDailyBreaks(); });
 }
 </script>
 </body>

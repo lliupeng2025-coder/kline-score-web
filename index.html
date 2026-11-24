@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>K线计分 · 文华加权周线</title>
-<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261113r5&marker=4"></script>
+<script src="https://yllnlwrpbllgscqaplgm.supabase.co/functions/v1/kline-web/lightweight-charts.js?v=20261124r5&marker=4"></script>
 <style>
   :root{
     --bg:#000; --panel:#0d0f14; --border:#23262e; --text:#d7dae0; --muted:#8a8f9a;
@@ -48,6 +48,8 @@
   .alert-row{display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:6px;padding:4px 9px;margin:0 0 4px;font-size:12px;background:#12141a}
   .alert-row .nm{font-weight:600}
   .alert-row .sc{color:var(--muted);font-size:11px}
+  .month-rev-row{flex-wrap:wrap}
+  .month-rev-row .brk{flex-basis:100%;color:var(--muted);font-size:11px;line-height:1.55;padding-left:2px}
   .alert-row .dt{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
   .alert-row .dt.up{color:var(--red)} .alert-row .dt.down{color:var(--green)}
   .arrow{font-weight:700;border-radius:5px;padding:1px 6px;font-size:11px}
@@ -101,7 +103,7 @@
       <div id="monList"><span class="hint">加载中…</span></div>
     </div>
     <div class="alert-col">
-      <h3>月反转（对比上一月）<span id="monRevCnt" class="hint"></span></h3>
+      <h3>月反转（每周更新 · 对比上一完整月）<span id="monRevCnt" class="hint"></span></h3>
       <div id="monRevList"><span class="hint">加载中…</span></div>
     </div>
   </div>
@@ -183,6 +185,12 @@ function previewOHLC(row){
       vals[2] > Math.min(vals[0], vals[3]) || vals[1] < vals[2]) throw new Error('合成源 OHLC/量无效');
   return {o:vals[0],h:vals[1],l:vals[2],c:vals[3],vol:vals[4]};
 }
+function previewPowerSummary(lines){
+  const total = lines.reduce((s,x)=>s+(x.direction==='up'?x.score:-x.score),0);
+  const latest = [...lines].sort((a,b)=>a.time.localeCompare(b.time)).pop();
+  const direction = total > 0 ? 'up' : total < 0 ? 'down' : latest ? latest.direction : 'none';
+  return {total,direction};
+}
 function makeIncompleteMonth(closedMonths, weeks, code, context, now){
   const {day, clock} = previewShanghaiTime(now), month = day.slice(0, 7), first = month + '-01';
   if (!context || context.schema !== 'formal-month-preview/v1' || context.month !== month ||
@@ -211,40 +219,56 @@ function makeIncompleteMonth(closedMonths, weeks, code, context, now){
   if (!expected.length || expected.some(d => !byDate.has(d))) throw new Error('本月已完成周线缺失，暂不合成');
   if ([...byDate.keys()].some(d => !expected.includes(d))) throw new Error('周线日期与交易日历不一致');
   const parts = expected.map(date => {
-    if (previewMonday(date) >= first) return previewOHLC(byDate.get(date));
+    if (previewMonday(date) >= first) return {...previewOHLC(byDate.get(date)),week_date:date};
     const slice = (context.boundary_slices || {})[code];
     const dates = previewTradingDays(first, date, holidays);
     if (!slice || slice.start !== dates[0] || slice.end !== date ||
         JSON.stringify(slice.dates) !== JSON.stringify(dates) || slice.price_source !== 'wenhua_day_exact'){
       throw new Error('跨月周缺少完整文华日K，暂不合成');
     }
-    return previewOHLC(slice);
+    return {...previewOHLC(slice),week_date:date};
   });
   const o = parts[0].o, h = Math.max(...parts.map(x=>x.h)), l = Math.min(...parts.map(x=>x.l));
   const c = parts[parts.length-1].c, vol = parts.reduce((s,x)=>s+x.vol,0);
   if (!Number.isFinite(vol)) throw new Error('合成量溢出');
   const byMonthDate = new Map(closedMonths.map(b => [b.week_date,b]));
-  const broken = [], active = [];
-  (base.active_power_lines || []).forEach(line => {
+  let active = (base.active_power_lines || []).map(line => {
     const source = byMonthDate.get(line.time);
     if (!source || !['up','down'].includes(line.direction) || !Number.isInteger(line.score) || line.score <= 0){
       throw new Error('完整月力量线来源不完整');
     }
     const high = toFinitePrice(source.h), low = toFinitePrice(source.l);
     if (![high,low].every(Number.isFinite)) throw new Error('完整月力量高低点无效');
-    const lost = line.direction === 'up' ? l <= low : h >= high;
-    (lost ? broken : active).push({...line});
+    return {...line,break_level:line.direction === 'up' ? low : high};
   });
-  const total = active.reduce((s,x)=>s+(x.direction==='up'?x.score:-x.score),0);
-  const latest = [...active].sort((a,b)=>a.time.localeCompare(b.time)).pop();
-  const direction = total > 0 ? 'up' : total < 0 ? 'down' : latest ? latest.direction : 'none';
+  const broken = [];
+  const baseDirection = ['up','down'].includes(base.power_direction) ? base.power_direction : 'none';
+  let previousDirection = baseDirection, reversalTime = null;
+  // 每根力量线只记首次破坏它的周K；不能用全月极值倒推到最新一周。
+  parts.forEach(part => {
+    const survivors = [];
+    active.forEach(line => {
+      const lost = line.direction === 'up' ? part.l <= line.break_level : part.h >= line.break_level;
+      if (lost) broken.push({...line,broken_time:part.week_date,
+        breaker_open:part.o,breaker_high:part.h,breaker_low:part.l,breaker_close:part.c});
+      else survivors.push(line);
+    });
+    active = survivors;
+    const current = previewPowerSummary(active).direction;
+    if (current !== previousDirection){ reversalTime = part.week_date; previousDirection = current; }
+  });
+  const {total,direction} = previewPowerSummary(active);
+  const powerReversal = base.power_direction != null && baseDirection !== direction;
+  const publicActive = active.map(line => { const {break_level,...original} = line; return original; });
   return {...base, week_date:cutoff, month_date:cutoff, o,h,l,c,vol,
     vol_ma3:null,boll_top:null,boll_mid:null,boll_bottom:null,
     is_incomplete:true,preview_month:month,preview_start:monthDays[0],preview_end:cutoff,
     preview_week_count:expected.length,preview_base_date:base.week_date,
-    preview_broken_lines:broken,active_power_lines:active,
+    preview_broken_lines:broken,preview_reversal_time:powerReversal ? reversalTime : null,
+    active_power_lines:publicActive,
     active_trend_lines:(base.active_trend_lines||[]).map(x=>({...x})),
-    total_power_score:total,power_direction:direction,bar_power_score:null,power_reversal:false};
+    total_power_score:total,power_direction:direction,bar_power_score:null,
+    power_change_time:powerReversal ? reversalTime : base.power_change_time,power_reversal:powerReversal};
 }
 // END MONTH_PREVIEW
 
@@ -314,8 +338,8 @@ function reversalFlags(source, limit) {
   const flags = new Set();
   const end = Math.min(source.length - 1, limit);
   for (let i = 1; i <= end; i++) {
-    // 预热期纯行情行（月线最早月份，power_direction=null）不参与反转判定
-    if (!source[i].is_incomplete && source[i - 1].power_direction != null &&
+    // 预热期纯行情行不参与；未完成月按本周已完成周K更新月反转。
+    if (source[i - 1].power_direction != null &&
         isReversal(source[i - 1].power_direction, source[i].power_direction)) {
       flags.add(source[i].week_date);
     }
@@ -699,6 +723,20 @@ function renderChips(){
     `<span class="chip ${escapeHtml(dirClass(latestTrend && latestTrend.direction))}">${bar.is_incomplete ? "完整月趋势" : "趋势阶段"} <b>${escapeHtml(latestTrend ? trendLabel(latestTrend.phase) : '—')}</b><span class="sub">破坏位 ${escapeHtml(latestTrend ? fmt(latestTrend.break_level, 0) : '—')}</span></span>`;
 }
 
+function monthBreakSummary(bar){
+  const groups = new Map();
+  (bar.preview_broken_lines || []).forEach(line => {
+    const date = line.broken_time || bar.preview_end;
+    const direction = DIR_TEXT[line.direction] || '无';
+    const comparison = line.direction === 'up'
+      ? '最低 ' + fmt(line.breaker_low,0) + ' ≤ 破坏位 ' + fmt(line.break_level,0)
+      : '最高 ' + fmt(line.breaker_high,0) + ' ≥ 破坏位 ' + fmt(line.break_level,0);
+    const text = line.time + ' ' + direction + line.score + '分力量线（' + comparison + '）';
+    if (!groups.has(date)) groups.set(date,[]);
+    groups.get(date).push(text);
+  });
+  return [...groups.entries()].map(([date,lines]) => date + ' 周K破坏：' + lines.join('；')).join('；');
+}
 function renderSnapshot(){
   const idx = currentBarIndex();
   const bar = bars[idx];
@@ -711,18 +749,21 @@ function renderSnapshot(){
   ).join('') || '<span class="hint">无</span>';
   const preview = !!bar.is_incomplete;
   const prevBar = idx > 0 ? bars[idx - 1] : null;
-  const barReversal = !preview && prevBar ? isReversal(prevBar.power_direction, bar.power_direction) : false;
+  const barReversal = prevBar && prevBar.power_direction != null
+    ? isReversal(prevBar.power_direction, bar.power_direction) : false;
+  const breakSummary = preview ? monthBreakSummary(bar) : '';
   snapshotEl.innerHTML = `
     <h2>${preview ? '未完成月K · 高低点破坏快照' : (period === 'm' ? '月线' : '周线')+'计分截面'} · ${escapeHtml(bar.week_date)}${hasHistoricalSelection() ? '（点选周期，双击图表返回最新）' : '（最新）'}</h2>
-    ${preview ? `<p class="hint">${escapeHtml(bar.preview_start)} 至 ${escapeHtml(bar.preview_end)}，合成 ${bar.preview_week_count} 根已完成周K。本根不计分，仅剔除高低点破坏的既有力量K（${bar.preview_broken_lines.length} 条）；存量总分和方向据剩余力量线汇总，不产生新反转。趋势、起点沿用 ${escapeHtml(bar.preview_base_date)} 完整月。</p>` : ''}
+    ${preview ? `<p class="hint">${escapeHtml(bar.preview_start)} 至 ${escapeHtml(bar.preview_end)}，合成 ${bar.preview_week_count} 根已完成周K。本根不新增或重组力量线，仅逐周剔除被破坏的既有力量K（${bar.preview_broken_lines.length} 条）；据剩余线汇总方向并更新月反转。趋势、起点沿用 ${escapeHtml(bar.preview_base_date)} 完整月。</p>` : ''}
     <div class="grid">
       <div><em>OHLC</em>${escapeHtml(fmt(bar.o,0))} / ${escapeHtml(fmt(bar.h,0))} / ${escapeHtml(fmt(bar.l,0))} / ${escapeHtml(fmt(bar.c,0))}</div>
       <div><em>VOL / MV(3,3)</em>${escapeHtml(fmtVol(bar.vol))} / ${escapeHtml(fmtVol(bar.vol_ma3))}</div>
       <div><em>BOLL TOP / MID / BOTTOM</em>${escapeHtml(fmt(bar.boll_top,0))} / ${escapeHtml(fmt(bar.boll_mid,0))} / ${escapeHtml(fmt(bar.boll_bottom,0))}</div>
       <div><em>${preview ? "存量方向 / 剩余总分 / 本根不计分" : "力量总方向 / 总分 / 当前K分"}</em><span class="${escapeHtml(dirClass(bar.power_direction))}-text">${escapeHtml(DIR_TEXT[bar.power_direction] || '无')}</span> / ${escapeHtml(bar.total_power_score ?? '—')} / ${escapeHtml(bar.bar_power_score ?? '—')}</div>
-      <div><em>力量反转</em>${preview ? "未完成月不判定" : barReversal ? '是（' + escapeHtml(bar.week_date) + '）' : '否'}</div>
+      <div><em>力量反转</em>${barReversal ? '是（' + escapeHtml(preview && bar.preview_reversal_time ? bar.preview_reversal_time : bar.week_date) + '）' : '否'}</div>
       <div><em>计算起点</em>${escapeHtml(bar.calc_start || '—')}</div>
     </div>
+    ${preview && breakSummary ? `<div><em class="hint">被破坏力量线与对应周K</em><br>${escapeHtml(breakSummary)}</div>` : ''}
     <div><em class="hint">全部有效力量K线（红↑向上 / 绿↓向下）</em><br>${lines}</div>
     <div><em class="hint">${preview ? "趋势线（沿用完整月）" : "趋势线"}（趋势1/2/3 · 方向 · 起点 · 破坏位）</em><br>${trends}</div>`;
 }
@@ -867,7 +908,57 @@ document.getElementById('chart').addEventListener('dblclick', () => {
   selectedIdx = -1; drawMarkers(); renderSnapshot();
 });
 
-// ===== 力量反转预警（全市场，各品种自身最近两周对比）=====
+// ===== 力量反转预警（周线逐周；月反转按本月已完成周K更新）=====
+async function loadWeeklyMonthReversals(mBy, activeSymbols, now, latestWeek){
+  const context = await getMonthPreviewContext();
+  const {day} = previewShanghaiTime(now), first = day.slice(0,7) + '-01';
+  const latestClosed = previewLatestClosedWeek(now, new Set(context.holidays || []));
+  // 周五收盘后到云库更新完成前，仍按云库最新完整周展示，不用尚未入库的周K清空榜单。
+  const cutoff = latestWeek && latestClosed && latestWeek < latestClosed ? latestWeek : latestClosed;
+  if (!cutoff || cutoff < first || cutoff.slice(0,7) !== day.slice(0,7)) return null;
+  const effectiveNow = cutoff + 'T07:30:00Z';  // 该周最后交易日 15:30（上海）
+  const previousMonth = previewDateAdd(first, -1).slice(0,7);
+  const bases = {};
+  activeSymbols.forEach(sym => {
+    const base = (mBy[sym] || []).find(b => String(b.month_date).slice(0,7) === previousMonth);
+    if (base) bases[sym] = base;
+  });
+  const symbols = Object.keys(bases);
+  if (!symbols.length) return {rows:[],cutoff,skipped:0};
+  const weekRows = await dbSelectAll('weekly_bars',
+    'select=symbol,week_date,o,h,l,c,vol&week_date=gte.' + first + '&week_date=lte.' + cutoff + '&order=week_date.asc');
+  const weeksBy = {};
+  weekRows.forEach(b => { (weeksBy[b.symbol] = weeksBy[b.symbol] || []).push(b); });
+
+  // 批量取力量线来源月的高低点；仅需活跃力量线指向的月份，不拉全量月线快照。
+  const sourceDates = new Set(), needed = new Set();
+  symbols.forEach(sym => (bases[sym].active_power_lines || []).forEach(line => {
+    sourceDates.add(line.time); needed.add(sym + '|' + line.time);
+  }));
+  const dateList = '(' + [...sourceDates].sort().map(d => '"' + d + '"').join(',') + ')';
+  const symbolList = '(' + symbols.map(s => '"' + s + '"').join(',') + ')';
+  const sourceRows = sourceDates.size ? await dbSelectAll('monthly_bars',
+    'select=symbol,month_date,o,h,l,c,vol&symbol=in.' + encodeURIComponent(symbolList) +
+    '&month_date=in.' + encodeURIComponent(dateList) + '&order=month_date.asc') : [];
+  const sourcesBy = {};
+  sourceRows.forEach(b => {
+    if (!needed.has(b.symbol + '|' + b.month_date)) return;
+    (sourcesBy[b.symbol] = sourcesBy[b.symbol] || []).push({...b,week_date:b.month_date});
+  });
+  const rows = [], errors = [];
+  let skipped = 0;
+  symbols.forEach(sym => {
+    const base = {...bases[sym],week_date:bases[sym].month_date};
+    const byDate = new Map((sourcesBy[sym] || []).map(b => [b.week_date,b]));
+    byDate.set(base.week_date,base);
+    const closedMonths = [...byDate.values()].sort((a,b) => a.week_date.localeCompare(b.week_date));
+    try {
+      const preview = makeIncompleteMonth(closedMonths,weeksBy[sym] || [],sym,context,effectiveNow);
+      if (preview && preview.power_reversal) rows.push(preview);
+    } catch (e) { skipped++; errors.push(sym + ': ' + e.message); }
+  });
+  return {rows,cutoff,skipped,errors};
+}
 async function loadAlerts(){
   const revList = document.getElementById('revList');
   const monList = document.getElementById('monList');
@@ -886,41 +977,42 @@ async function loadAlerts(){
       if (list.length >= 2 && list[0].week_date >= w1min) pairs[sym] = { cur: list[0], prev: list[1] };
     });
     const nameOf = {}; allSymbols.forEach(s => { nameOf[s.code] = s.short_name + ' · ' + s.cn_name; });
-    document.getElementById('alertsWeek').textContent = '本周 ' + w1 + ' · 左列周线对比上一周 · 右两列按完整月口径';
+    document.getElementById('alertsWeek').textContent = '本周 ' + w1 + ' · 左列周反转 · 中列完整月方向 · 右列月反转按本周已完成周K';
 
     // 反转新规则：本周方向与上一周方向不一致即算反转（含与"无"的相互切换），前端直接比较两周方向
     const revs = Object.values(pairs).filter(p => isReversal(p.prev.power_direction, p.cur.power_direction))
       .map(p => p.cur)
       .sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
-    // 月线方向：本周反转品种各自取最新一根月线（最新完成月），照搬月线 power_direction
-    const monLatest = {};
-    if (revs.length) {
-      const inList = '(' + revs.map(b => '"' + b.symbol + '"').join(',') + ')';
-      const monRows = await dbSelectAll('monthly_bars',
-        'select=symbol,month_date,power_direction,total_power_score&symbol=in.' + encodeURIComponent(inList) + '&order=month_date.desc');
-      monRows.forEach(b => {
-        const cur = monLatest[b.symbol];
-        if (!cur || String(b.month_date) > String(cur.month_date)) monLatest[b.symbol] = b;
-      });
-    }
 
-    // 月反转：全市场按品种比较「最新月」与「上一月」的方向（含与"无"的互转；预热期 null 不参与）
+    // 完整月数据同时用于中列方向、月末兜底，以及本月周度月反转的基准。
     const m1 = (await dbSelect('monthly_bars', 'select=month_date&order=month_date.desc&limit=1'))[0].month_date;
     const mSince = new Date(Date.parse(m1 + 'T00:00:00') - 80 * 864e5).toISOString().slice(0, 10);
     const m1min = new Date(Date.parse(m1 + 'T00:00:00') - 45 * 864e5).toISOString().slice(0, 10);
     const mRows = await dbSelectAll('monthly_bars',
-      'select=symbol,month_date,total_power_score,power_direction&month_date=gte.' + encodeURIComponent(mSince) + '&order=month_date.desc');
+      'select=symbol,month_date,o,h,l,c,vol,total_power_score,power_direction,power_change_time,active_power_lines,active_trend_lines,calc_start&month_date=gte.' + encodeURIComponent(mSince) + '&order=month_date.desc');
     const mBy = {};
     mRows.forEach(b => { (mBy[b.symbol] = mBy[b.symbol] || []).push(b); });
-    const mRevs = Object.values(mBy)
+    const completedRevs = Object.values(mBy)
       .filter(list => list.length >= 2 && list[0].month_date >= m1min && list[1].power_direction != null
         && isReversal(list[1].power_direction, list[0].power_direction))
-      .map(list => list[0])
-      .sort((a, b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
+      .map(list => list[0]);
+    const monLatest = {};
+    revs.forEach(b => { if ((mBy[b.symbol] || []).length) monLatest[b.symbol] = mBy[b.symbol][0]; });
+
+    let mRevs = completedRevs, mRevCutoff = null, mRevSkipped = 0, mRevError = '';
+    try {
+      const weeklyMonth = await loadWeeklyMonthReversals(mBy,Object.keys(pairs),new Date(),w1);
+      if (weeklyMonth){
+        mRevs = weeklyMonth.rows; mRevCutoff = weeklyMonth.cutoff; mRevSkipped = weeklyMonth.skipped;
+      }
+    } catch (e) { mRevError = e.message; }
+    mRevs.sort((a,b) => (nameOf[a.symbol] || '').localeCompare(nameOf[b.symbol] || '', 'zh'));
 
     document.getElementById('revCnt').textContent = '共 ' + revs.length;
     document.getElementById('monCnt').textContent = '共 ' + revs.length;
-    document.getElementById('monRevCnt').textContent = '共 ' + mRevs.length + ' · 最新月 ' + m1;
+    document.getElementById('monRevCnt').textContent = '共 ' + mRevs.length +
+      (mRevCutoff ? ' · 截至 ' + mRevCutoff : ' · 最新完成月 ' + m1) +
+      (mRevSkipped ? ' · ' + mRevSkipped + ' 品种缺源未判定' : '');
     revList.innerHTML = revs.length ? revs.map(b => {
       const dir = normDirection(b.power_direction);
       const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
@@ -936,11 +1028,16 @@ async function loadAlerts(){
         : '月线暂无数据';
       return `<div class="alert-row"><span class="arrow ${cls}">${badge}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${detail}</span></div>`;
     }).join('') : '<span class="hint">本周无方向反转品种</span>';
-    monRevList.innerHTML = mRevs.length ? mRevs.map(b => {
+    const mRevHtml = mRevs.length ? mRevs.map(b => {
       const dir = normDirection(b.power_direction);
       const arrow = dir === 'up' ? '转↑' : dir === 'down' ? '转↓' : '转—';
-      return `<div class="alert-row"><span class="arrow ${dir}">${arrow}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">现 ${escapeHtml(b.total_power_score ?? '—')} 分 · ${escapeHtml(b.month_date)}</span></div>`;
-    }).join('') : '<span class="hint">最新月无方向反转品种</span>';
+      const detail = b.is_incomplete
+        ? '现 ' + escapeHtml(b.total_power_score ?? '—') + ' 分 · 截至 ' + escapeHtml(b.preview_end)
+        : '现 ' + escapeHtml(b.total_power_score ?? '—') + ' 分 · ' + escapeHtml(b.month_date);
+      const breaks = b.is_incomplete ? monthBreakSummary(b) : '';
+      return `<div class="alert-row month-rev-row"><span class="arrow ${dir}">${arrow}</span><span class="nm">${escapeHtml(nameOf[b.symbol] || b.symbol)}</span><span class="sc">${detail}</span>${breaks ? `<span class="brk">${escapeHtml(breaks)}</span>` : ''}</div>`;
+    }).join('') : '<span class="hint">' + (mRevCutoff ? '本周无月反转品种' : '最新完成月无方向反转品种') + '</span>';
+    monRevList.innerHTML = (mRevError ? '<p class="hint">周度月反转加载失败，暂显示完整月结果：' + escapeHtml(mRevError) + '</p>' : '') + mRevHtml;
   } catch (e) {
     revList.innerHTML = '<span class="hint">预警加载失败: ' + escapeHtml(e.message) + '</span>';
     monList.innerHTML = '';

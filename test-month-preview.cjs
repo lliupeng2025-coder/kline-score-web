@@ -115,6 +115,21 @@ test('break summary names the source power, breaker week and threshold',()=>{
  assert.match(text,/2026-11-20 周K破坏/);assert.match(text,/2025-12-31 向上2分力量线/);
  assert.match(text,/2026-08-31 向上1分力量线/);assert.match(text,/最低 5039 ≤ 破坏位 5083/);assert.match(text,/最低 5039 ≤ 破坏位 5108/);
 });
+test('complete monthly reversals stay above the separate pending-confirmation note',()=>{
+ const original=html.indexOf('<h3>月反转（对比上一月）');
+ const pending=html.indexOf('<h3>再次反转待确认（本月未完成）');
+ assert.ok(original>0);assert.ok(pending>original);
+ assert.match(html,/\.month-pending\{margin-top:2em\}/);
+ const loader=html.slice(html.indexOf('async function loadAlerts('),html.indexOf('// 启动保护'));
+ assert.match(loader,/const mRevs = Object\.values\(mBy\)/);
+ assert.match(loader,/pendingRevs = weeklyMonth\.rows/);
+ assert.doesNotMatch(loader,/mRevs = weeklyMonth\.rows/);
+ assert.match(loader,/monPendingBlock\.hidden = !pendingCutoff && !pendingError/);
+ assert.match(loader,/monRevList\.innerHTML = mRevs\.length/);
+ assert.match(loader,/monPendingList\.innerHTML =/);
+ assert.match(html,/d\.pending \? '待确认' : '反转'/);
+ assert.match(html,/preview \? '再次反转待确认（' : '是（'/);
+});
 test('future weekly perturbation cannot alter historical preview, real fixtures preserve original months',{skip:!process.env.MONTH_PREVIEW_FIXTURES},()=>{
  const fixtures=process.env.MONTH_PREVIEW_FIXTURES;
  for(const code of ['rbJQ00.SF','auJQ00.SF']){
